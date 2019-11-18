@@ -290,7 +290,8 @@ static void ffs_closed(struct ffs_data *ffs);
 
 static int ffs_mutex_lock(struct mutex *mutex, unsigned nonblock)
 	__attribute__((warn_unused_result, nonnull));
-static char *ffs_prepare_buffer(const char __user *buf, size_t len)
+static char *ffs_prepare_buffer(const char __user *buf, size_t len,
+	size_t extra_buf_alloc)
 	__attribute__((warn_unused_result, nonnull));
 
 
@@ -366,6 +367,7 @@ static ssize_t ffs_ep0_write(struct file *file, const char __user *buf,
 			     size_t len, loff_t *ptr)
 {
 	struct ffs_data *ffs = file->private_data;
+	struct usb_gadget *gadget = ffs->gadget;
 	ssize_t ret;
 	char *data;
 
@@ -397,7 +399,7 @@ static ssize_t ffs_ep0_write(struct file *file, const char __user *buf,
 			break;
 		}
 
-		data = ffs_prepare_buffer(buf, len);
+		data = ffs_prepare_buffer(buf, len, 0);
 		if (IS_ERR(data)) {
 			ret = PTR_ERR(data);
 			break;
@@ -469,7 +471,7 @@ static ssize_t ffs_ep0_write(struct file *file, const char __user *buf,
 
 		spin_unlock_irq(&ffs->ev.waitq.lock);
 
-		data = ffs_prepare_buffer(buf, len);
+		data = ffs_prepare_buffer(buf, len, gadget->extra_buf_alloc);
 		if (IS_ERR(data)) {
 			ret = PTR_ERR(data);
 			break;
@@ -998,6 +1000,7 @@ static ssize_t ffs_epfile_io(struct file *file, struct ffs_io_data *io_data)
 	char *data = NULL;
 	ssize_t ret, data_len = -EINVAL;
 	int halt;
+	size_t extra_buf_alloc = 0;
 
 	ffs_log("enter: epfile name %s epfile err %d (%s)", epfile->name,
 		atomic_read(&epfile->error), io_data->read ? "READ" : "WRITE");
@@ -1092,7 +1095,12 @@ static ssize_t ffs_epfile_io(struct file *file, struct ffs_io_data *io_data)
 			data_len = usb_ep_align_maybe(gadget, ep->ep, data_len);
 		spin_unlock_irq(&epfile->ffs->eps_lock);
 
-		data = kmalloc(data_len, GFP_KERNEL);
+		extra_buf_alloc = gadget->extra_buf_alloc;
+		if (!io_data->read)
+			data = kmalloc(data_len + extra_buf_alloc,
+					GFP_KERNEL);
+		else
+			data = kmalloc(data_len, GFP_KERNEL);
 		if (unlikely(!data)) {
 			ret = -ENOMEM;
 			goto error_mutex;
@@ -1316,11 +1324,12 @@ static ssize_t ffs_epfile_write_iter(struct kiocb *kiocb, struct iov_iter *from)
 	ffs_log("enter");
 
 	if (!is_sync_kiocb(kiocb)) {
-		p = kmalloc(sizeof(io_data), GFP_KERNEL);
+		p = kzalloc(sizeof(io_data), GFP_KERNEL);
 		if (unlikely(!p))
 			return -ENOMEM;
 		p->aio = true;
 	} else {
+		memset(p, 0, sizeof(*p));
 		p->aio = false;
 	}
 
@@ -1357,11 +1366,12 @@ static ssize_t ffs_epfile_read_iter(struct kiocb *kiocb, struct iov_iter *to)
 	ffs_log("enter");
 
 	if (!is_sync_kiocb(kiocb)) {
-		p = kmalloc(sizeof(io_data), GFP_KERNEL);
+		p = kzalloc(sizeof(io_data), GFP_KERNEL);
 		if (unlikely(!p))
 			return -ENOMEM;
 		p->aio = true;
 	} else {
+		memset(p, 0, sizeof(*p));
 		p->aio = false;
 	}
 
@@ -4412,15 +4422,18 @@ static void ffs_closed(struct ffs_data *ffs)
 {
 	struct ffs_dev *ffs_obj;
 	struct f_fs_opts *opts;
-	struct config_item *ci;
 
 	ENTER();
+
 	ffs_log("enter");
+
 	ffs_dev_lock();
 
 	ffs_obj = ffs->private_data;
-	if (!ffs_obj)
+	if (!ffs_obj) {
+		ffs_dev_unlock();
 		goto done;
+	}
 
 	ffs_obj->desc_ready = false;
 	ffs_obj->ffs_data = NULL;
@@ -4429,25 +4442,29 @@ static void ffs_closed(struct ffs_data *ffs)
 	    ffs_obj->ffs_closed_callback)
 		ffs_obj->ffs_closed_callback(ffs);
 
-	if (ffs_obj->opts)
+	if (ffs_obj->opts) {
 		opts = ffs_obj->opts;
-	else
+	} else {
+		ffs_dev_unlock();
 		goto done;
+	}
 
 	/* to get updated refcount atomic variable value */
 	smp_mb__before_atomic();
 	if (opts->no_configfs || !opts->func_inst.group.cg_item.ci_parent
-	    || !atomic_read(&opts->func_inst.group.cg_item.ci_kref.refcount))
+	    || !atomic_read(&opts->func_inst.group.cg_item.ci_kref.refcount)) {
+		ffs_dev_unlock();
 		goto done;
+	}
 
-	ci = opts->func_inst.group.cg_item.ci_parent->ci_parent;
 	ffs_dev_unlock();
 
-	if (test_bit(FFS_FL_BOUND, &ffs->flags))
-		unregister_gadget_item(ci);
-	return;
+	if (test_bit(FFS_FL_BOUND, &ffs->flags)) {
+		unregister_gadget_item(opts->
+			       func_inst.group.cg_item.ci_parent->ci_parent);
+		ffs_log("unreg gadget done");
+	}
 done:
-	ffs_dev_unlock();
 	ffs_log("exit");
 }
 
@@ -4460,14 +4477,23 @@ static int ffs_mutex_lock(struct mutex *mutex, unsigned nonblock)
 		: mutex_lock_interruptible(mutex);
 }
 
-static char *ffs_prepare_buffer(const char __user *buf, size_t len)
+/**
+ * ffs_prepare_buffer() - copy userspace buffer into kernel.
+ * @buf: userspace buffer
+ * @len: length of the buffer
+ * @extra_alloc_buf: Extra buffer allocation if required by UDC.
+ *
+ * This function returns pointer to the copied buffer
+ */
+static char *ffs_prepare_buffer(const char __user *buf, size_t len,
+		size_t extra_buf_alloc)
 {
 	char *data;
 
 	if (unlikely(!len))
 		return NULL;
 
-	data = kmalloc(len, GFP_KERNEL);
+	data = kmalloc(len + extra_buf_alloc, GFP_KERNEL);
 	if (unlikely(!data))
 		return ERR_PTR(-ENOMEM);
 

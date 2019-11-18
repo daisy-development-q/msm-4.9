@@ -71,6 +71,7 @@ static void __unhash_process(struct task_struct *p, bool group_dead)
 		detach_pid(p, PIDTYPE_SID);
 
 		list_del_rcu(&p->tasks);
+		delete_from_adj_tree(p);
 		list_del_init(&p->sibling);
 		__this_cpu_dec(process_counts);
 	}
@@ -721,6 +722,7 @@ static void check_stack_usage(void)
 	static DEFINE_SPINLOCK(low_water_lock);
 	static int lowest_to_date = THREAD_SIZE;
 	unsigned long free;
+	int islower = false;
 
 	free = stack_not_used(current);
 
@@ -729,17 +731,47 @@ static void check_stack_usage(void)
 
 	spin_lock(&low_water_lock);
 	if (free < lowest_to_date) {
-		pr_info("%s (%d) used greatest stack depth: %lu bytes left\n",
-			current->comm, task_pid_nr(current), free);
 		lowest_to_date = free;
+		islower = true;
 	}
 	spin_unlock(&low_water_lock);
+
+	if (islower) {
+		pr_info("%s (%d) used greatest stack depth: %lu bytes left\n",
+				current->comm, task_pid_nr(current), free);
+	}
 }
 #else
 static inline void check_stack_usage(void) {}
 #endif
 
-void __noreturn do_exit(long code)
+#ifndef CONFIG_PROFILING
+static BLOCKING_NOTIFIER_HEAD(task_exit_notifier);
+
+int profile_event_register(enum profile_type t, struct notifier_block *n)
+{
+	if (t == PROFILE_TASK_EXIT)
+		return blocking_notifier_chain_register(&task_exit_notifier, n);
+
+	return -ENOSYS;
+}
+
+int profile_event_unregister(enum profile_type t, struct notifier_block *n)
+{
+	if (t == PROFILE_TASK_EXIT)
+		return blocking_notifier_chain_unregister(&task_exit_notifier,
+							  n);
+
+	return -ENOSYS;
+}
+
+void profile_task_exit(struct task_struct *tsk)
+{
+	blocking_notifier_call_chain(&task_exit_notifier, 0, tsk);
+}
+#endif
+
+void do_exit(long code)
 {
 	struct task_struct *tsk = current;
 	int group_dead;
@@ -773,7 +805,11 @@ void __noreturn do_exit(long code)
 	 * leave this task alone and wait for reboot.
 	 */
 	if (unlikely(tsk->flags & PF_EXITING)) {
+#ifdef CONFIG_PANIC_ON_RECURSIVE_FAULT
+		panic("Recursive fault!\n");
+#else
 		pr_alert("Fixing recursive fault but reboot is needed!\n");
+#endif
 		/*
 		 * We can do this unlocked here. The futex code uses
 		 * this flag just to verify whether the pi state
@@ -792,6 +828,10 @@ void __noreturn do_exit(long code)
 
 	sched_exit(tsk);
 	schedtune_exit_task(tsk);
+
+	if (tsk->flags & PF_SU) {
+		su_exit();
+	}
 
 	/*
 	 * Ensure that all new tsk->pi_lock acquisitions must observe

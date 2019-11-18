@@ -40,6 +40,20 @@
 #define POLL_TIME_USEC_FOR_LN_CNT 500
 #define MAX_POLL_CNT 10
 
+static bool _sde_encoder_phys_is_ppsplit(struct sde_encoder_phys *phys_enc)
+{
+	enum sde_rm_topology_name topology;
+
+	if (!phys_enc)
+		return false;
+
+	topology = sde_connector_get_topology_name(phys_enc->connector);
+	if (topology == SDE_RM_TOPOLOGY_PPSPLIT)
+		return true;
+
+	return false;
+}
+
 static bool sde_encoder_phys_vid_is_master(
 		struct sde_encoder_phys *phys_enc)
 {
@@ -311,19 +325,23 @@ static void programmable_rot_fetch_config(struct sde_encoder_phys *phys_enc,
 		rot_fetch_start_vsync_counter);
 
 	if (!phys_enc->sde_kms->splash_data.cont_splash_en) {
-		phys_enc->hw_ctl->ops.get_bitmask_intf(
-				phys_enc->hw_ctl, &flush_mask,
-				vid_enc->hw_intf->idx);
-		phys_enc->hw_ctl->ops.update_pending_flush(
-				phys_enc->hw_ctl, flush_mask);
+		SDE_EVT32(DRMID(phys_enc->parent), f.enable, f.fetch_start);
 
+		if (!_sde_encoder_phys_is_ppsplit(phys_enc) ||
+			sde_encoder_phys_vid_is_master(phys_enc)) {
+			phys_enc->hw_ctl->ops.get_bitmask_intf(
+					phys_enc->hw_ctl, &flush_mask,
+					vid_enc->hw_intf->idx);
+			phys_enc->hw_ctl->ops.update_pending_flush(
+					phys_enc->hw_ctl, flush_mask);
+		}
 		spin_lock_irqsave(phys_enc->enc_spinlock, lock_flags);
 		vid_enc->hw_intf->ops.setup_rot_start(vid_enc->hw_intf, &f);
 		spin_unlock_irqrestore(phys_enc->enc_spinlock, lock_flags);
-	}
 
-	vid_enc->rot_fetch = f;
-	vid_enc->rot_fetch_valid = true;
+		vid_enc->rot_fetch = f;
+		vid_enc->rot_fetch_valid = true;
+	}
 }
 
 static bool sde_encoder_phys_vid_mode_fixup(
@@ -420,8 +438,8 @@ static void sde_encoder_phys_vid_vblank_irq(void *arg, int irq_idx)
 			to_sde_encoder_phys_vid(phys_enc);
 	struct sde_hw_ctl *hw_ctl;
 	unsigned long lock_flags;
-	u32 reset_status = 0;
 	u32 flush_register = ~0;
+	u32 reset_status = 0;
 	int new_cnt = -1, old_cnt = -1;
 	u32 event = 0;
 
@@ -492,20 +510,6 @@ static void sde_encoder_phys_vid_underrun_irq(void *arg, int irq_idx)
 	if (phys_enc->parent_ops.handle_underrun_virt)
 		phys_enc->parent_ops.handle_underrun_virt(phys_enc->parent,
 			phys_enc);
-}
-
-static bool _sde_encoder_phys_is_ppsplit(struct sde_encoder_phys *phys_enc)
-{
-	enum sde_rm_topology_name topology;
-
-	if (!phys_enc)
-		return false;
-
-	topology = sde_connector_get_topology_name(phys_enc->connector);
-	if (topology == SDE_RM_TOPOLOGY_PPSPLIT)
-		return true;
-
-	return false;
 }
 
 static bool _sde_encoder_phys_is_dual_ctl(struct sde_encoder_phys *phys_enc)
@@ -623,6 +627,7 @@ static int sde_encoder_phys_vid_control_vblank_irq(
 		return -EINVAL;
 	}
 
+	mutex_lock(phys_enc->vblank_ctl_lock);
 	refcount = atomic_read(&phys_enc->vblank_refcount);
 	vid_enc = to_sde_encoder_phys_vid(phys_enc);
 
@@ -643,11 +648,17 @@ static int sde_encoder_phys_vid_control_vblank_irq(
 	SDE_EVT32(DRMID(phys_enc->parent), enable,
 			atomic_read(&phys_enc->vblank_refcount));
 
-	if (enable && atomic_inc_return(&phys_enc->vblank_refcount) == 1)
+	if (enable && atomic_inc_return(&phys_enc->vblank_refcount) == 1) {
 		ret = sde_encoder_helper_register_irq(phys_enc, INTR_IDX_VSYNC);
-	else if (!enable && atomic_dec_return(&phys_enc->vblank_refcount) == 0)
+		if (ret)
+			atomic_dec_return(&phys_enc->vblank_refcount);
+	} else if (!enable &&
+			atomic_dec_return(&phys_enc->vblank_refcount) == 0) {
 		ret = sde_encoder_helper_unregister_irq(phys_enc,
 				INTR_IDX_VSYNC);
+		if (ret)
+			atomic_inc_return(&phys_enc->vblank_refcount);
+	}
 
 end:
 	if (ret) {
@@ -658,6 +669,7 @@ end:
 				vid_enc->hw_intf->idx - INTF_0,
 				enable, refcount, SDE_EVTLOG_ERROR);
 	}
+	mutex_unlock(phys_enc->vblank_ctl_lock);
 	return ret;
 }
 
@@ -732,11 +744,10 @@ static void sde_encoder_phys_vid_enable(struct sde_encoder_phys *phys_enc)
 	sde_encoder_phys_vid_setup_timing_engine(phys_enc);
 
 	/*
-	 * For single flush cases (dual-ctl or pp-split), skip setting the
-	 * flush bit for the slave intf, since both intfs use same ctl
-	 * and HW will only flush the master.
+	 * For pp-split, skip setting the flush bit for the slave intf,
+	 * since both intfs use same ctl and HW will only flush the master.
 	 */
-	if (sde_encoder_phys_vid_needs_single_flush(phys_enc) &&
+	if (_sde_encoder_phys_is_ppsplit(phys_enc) &&
 		!sde_encoder_phys_vid_is_master(phys_enc))
 		goto skip_flush;
 
@@ -844,7 +855,7 @@ end:
 	if (phys_enc->parent_ops.handle_frame_done && event)
 		phys_enc->parent_ops.handle_frame_done(
 				phys_enc->parent, phys_enc,
-				SDE_ENCODER_FRAME_EVENT_DONE);
+				event);
 	return ret;
 }
 
@@ -1231,6 +1242,7 @@ struct sde_encoder_phys *sde_encoder_phys_vid_init(
 	phys_enc->split_role = p->split_role;
 	phys_enc->intf_mode = INTF_MODE_VIDEO;
 	phys_enc->enc_spinlock = p->enc_spinlock;
+	phys_enc->vblank_ctl_lock = p->vblank_ctl_lock;
 	phys_enc->comp_type = p->comp_type;
 	for (i = 0; i < INTR_IDX_MAX; i++) {
 		irq = &phys_enc->irq[i];

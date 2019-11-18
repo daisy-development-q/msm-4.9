@@ -8,6 +8,7 @@
 #include <linux/init.h>
 #include <linux/notifier.h>
 #include <linux/sched.h>
+#include <linux/sched/smt.h>
 #include <linux/unistd.h>
 #include <linux/cpu.h>
 #include <linux/oom.h>
@@ -362,6 +363,12 @@ void cpu_hotplug_enable(void)
 EXPORT_SYMBOL_GPL(cpu_hotplug_enable);
 #endif	/* CONFIG_HOTPLUG_CPU */
 
+/*
+ * Architectures that need SMT-specific errata handling during SMT hotplug
+ * should override this.
+ */
+void __weak arch_smt_update(void) { }
+
 #ifdef CONFIG_HOTPLUG_SMT
 enum cpuhp_smt_control cpu_smt_control __read_mostly = CPU_SMT_ENABLED;
 EXPORT_SYMBOL_GPL(cpu_smt_control);
@@ -599,6 +606,20 @@ static void undo_cpu_up(unsigned int cpu, struct cpuhp_cpu_state *st)
 	}
 }
 
+static inline bool can_rollback_cpu(struct cpuhp_cpu_state *st)
+{
+	if (IS_ENABLED(CONFIG_HOTPLUG_CPU))
+		return true;
+	/*
+	 * When CPU hotplug is disabled, then taking the CPU down is not
+	 * possible because takedown_cpu() and the architecture and
+	 * subsystem specific mechanisms are not available. So the CPU
+	 * which would be completely unplugged again needs to stay around
+	 * in the current state.
+	 */
+	return st->state <= CPUHP_BRINGUP_CPU;
+}
+
 static int cpuhp_up_callbacks(unsigned int cpu, struct cpuhp_cpu_state *st,
 			      enum cpuhp_state target)
 {
@@ -609,9 +630,10 @@ static int cpuhp_up_callbacks(unsigned int cpu, struct cpuhp_cpu_state *st,
 		st->state++;
 		ret = cpuhp_invoke_callback(cpu, st->state, true, NULL);
 		if (ret) {
-			st->target = prev_state;
-			undo_cpu_up(cpu, st);
-			cpu_notify(CPU_UP_CANCELED, cpu);
+			if (can_rollback_cpu(st)) {
+				st->target = prev_state;
+				undo_cpu_up(cpu, st);
+			}
 			break;
 		}
 	}
@@ -1058,6 +1080,7 @@ out:
 	/* This post dead nonsense must die */
 	if (!ret && hasdied)
 		cpu_notify_nofail(CPU_POST_DEAD, cpu);
+	arch_smt_update();
 	return ret;
 }
 
@@ -1070,7 +1093,14 @@ static int cpu_down_maps_locked(unsigned int cpu, enum cpuhp_state target)
 
 static int do_cpu_down(unsigned int cpu, enum cpuhp_state target)
 {
+	struct cpumask newmask;
 	int err;
+
+	cpumask_andnot(&newmask, cpu_online_mask, cpumask_of(cpu));
+	/* One big cluster CPU and one little cluster CPU must remain online */
+	if (!cpumask_intersects(&newmask, cpu_perf_mask) ||
+		!cpumask_intersects(&newmask, cpu_lp_mask))
+		return -EINVAL;
 
 	cpu_maps_update_begin();
 	err = cpu_down_maps_locked(cpu, target);
@@ -1181,6 +1211,7 @@ static int _cpu_up(unsigned int cpu, int tasks_frozen, enum cpuhp_state target)
 out:
 	trace_cpuhp_latency(cpu, 1, start_time, ret);
 	cpu_hotplug_done();
+	arch_smt_update();
 	return ret;
 }
 
@@ -1271,6 +1302,7 @@ int freeze_secondary_cpus(int primary)
 {
 	int cpu, error = 0;
 
+	unaffine_perf_irqs();
 	cpu_maps_update_begin();
 	if (!cpu_online(primary))
 		primary = cpumask_first(cpu_online_mask);
@@ -1339,13 +1371,7 @@ void enable_nonboot_cpus(void)
 		error = _cpu_up(cpu, 1, CPUHP_ONLINE);
 		trace_suspend_resume(TPS("CPU_ON"), cpu, false);
 		if (!error) {
-			pr_info("CPU%d is up\n", cpu);
-			cpu_device = get_cpu_device(cpu);
-			if (!cpu_device)
-				pr_err("%s: failed to get cpu%d device\n",
-				       __func__, cpu);
-			else
-				kobject_uevent(&cpu_device->kobj, KOBJ_ONLINE);
+			pr_debug("CPU%d is up\n", cpu);
 			continue;
 		}
 		pr_warn("Error taking CPU%d up: %d\n", cpu, error);
@@ -1356,6 +1382,7 @@ void enable_nonboot_cpus(void)
 	cpumask_clear(frozen_cpus);
 out:
 	cpu_maps_update_done();
+	reaffine_perf_irqs();
 }
 
 static int __init alloc_frozen_cpus(void)
@@ -1474,7 +1501,6 @@ static struct cpuhp_step cpuhp_bp_states[] = {
 		.name			= "notify:prepare",
 		.startup.single		= notify_prepare,
 		.teardown.single	= notify_dead,
-		.skip_onerr		= true,
 		.cant_stop		= true,
 	},
 	/*
@@ -1558,7 +1584,7 @@ static struct cpuhp_step cpuhp_ap_states[] = {
 	},
 	[CPUHP_AP_PERF_ONLINE] = {
 		.name			= "perf:online",
-		.startup.single		= perf_event_init_cpu,
+		.startup.single		= perf_event_restart_events,
 		.teardown.single	= perf_event_exit_cpu,
 	},
 	[CPUHP_AP_WORKQUEUE_ONLINE] = {
@@ -1580,7 +1606,6 @@ static struct cpuhp_step cpuhp_ap_states[] = {
 		.name			= "notify:online",
 		.startup.single		= notify_online,
 		.teardown.single	= notify_down_prepare,
-		.skip_onerr		= true,
 	},
 #endif
 	/*
@@ -2042,7 +2067,7 @@ static void cpuhp_online_cpu_device(unsigned int cpu)
 	kobject_uevent(&dev->kobj, KOBJ_ONLINE);
 }
 
-static int cpuhp_smt_disable(enum cpuhp_smt_control ctrlval)
+int cpuhp_smt_disable(enum cpuhp_smt_control ctrlval)
 {
 	int cpu, ret = 0;
 
@@ -2068,18 +2093,21 @@ static int cpuhp_smt_disable(enum cpuhp_smt_control ctrlval)
 		 */
 		cpuhp_offline_cpu_device(cpu);
 	}
-	if (!ret)
+	if (!ret) {
 		cpu_smt_control = ctrlval;
+		arch_smt_update();
+	}
 	cpu_maps_update_done();
 	return ret;
 }
 
-static int cpuhp_smt_enable(void)
+int cpuhp_smt_enable(void)
 {
 	int cpu, ret = 0;
 
 	cpu_maps_update_begin();
 	cpu_smt_control = CPU_SMT_ENABLED;
+	arch_smt_update();
 	for_each_present_cpu(cpu) {
 		/* Skip online CPUs and CPUs on offline nodes */
 		if (cpu_online(cpu) || !node_online(cpu_to_node(cpu)))
@@ -2242,6 +2270,21 @@ EXPORT_SYMBOL(__cpu_active_mask);
 struct cpumask __cpu_isolated_mask __read_mostly;
 EXPORT_SYMBOL(__cpu_isolated_mask);
 
+/*
+ * This assumes that half of the CPUs are little and that they have lower
+ * CPU numbers than the big CPUs (e.g., on an 8-core system, CPUs 0-3 would be
+ * little and CPUs 4-7 would be big).
+ */
+#define LITTLE_CPU_MASK ((1UL << (NR_CPUS / 2)) - 1)
+#define BIG_CPU_MASK    (((1UL << NR_CPUS) - 1) & ~LITTLE_CPU_MASK)
+static const unsigned long little_cluster_cpus = LITTLE_CPU_MASK;
+const struct cpumask *const cpu_lp_mask = to_cpumask(&little_cluster_cpus);
+EXPORT_SYMBOL(cpu_lp_mask);
+
+static const unsigned long big_cluster_cpus = BIG_CPU_MASK;
+const struct cpumask *const cpu_perf_mask = to_cpumask(&big_cluster_cpus);
+EXPORT_SYMBOL(cpu_perf_mask);
+
 void init_cpu_present(const struct cpumask *src)
 {
 	cpumask_copy(&__cpu_present_mask, src);
@@ -2286,6 +2329,24 @@ void __init boot_cpu_hotplug_init(void)
 #endif
 	this_cpu_write(cpuhp_state.state, CPUHP_ONLINE);
 }
+
+enum cpu_mitigations cpu_mitigations __ro_after_init = CPU_MITIGATIONS_AUTO;
+
+static int __init mitigations_parse_cmdline(char *arg)
+{
+	if (!strcmp(arg, "off"))
+		cpu_mitigations = CPU_MITIGATIONS_OFF;
+	else if (!strcmp(arg, "auto"))
+		cpu_mitigations = CPU_MITIGATIONS_AUTO;
+	else if (!strcmp(arg, "auto,nosmt"))
+		cpu_mitigations = CPU_MITIGATIONS_AUTO_NOSMT;
+	else
+		pr_crit("Unsupported mitigations=%s, system may still be vulnerable\n",
+			arg);
+
+	return 0;
+}
+early_param("mitigations", mitigations_parse_cmdline);
 
 static ATOMIC_NOTIFIER_HEAD(idle_notifier);
 

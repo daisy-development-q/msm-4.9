@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2017, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -52,6 +52,16 @@
 #define IPAWANERR(fmt, args...) \
 	do { \
 		pr_err(DEV_NAME " %s:%d " fmt, __func__,\
+				__LINE__, ## args); \
+		IPA_IPC_LOGGING(ipa_get_ipc_logbuf(), \
+				DEV_NAME " %s:%d " fmt, ## args); \
+		IPA_IPC_LOGGING(ipa_get_ipc_logbuf_low(), \
+				DEV_NAME " %s:%d " fmt, ## args); \
+	} while (0)
+
+#define IPAWANERR_RL(fmt, args...) \
+	do { \
+		pr_err_ratelimited_ipa(DEV_NAME " %s:%d " fmt, __func__,\
 				__LINE__, ## args); \
 		IPA_IPC_LOGGING(ipa_get_ipc_logbuf(), \
 				DEV_NAME " %s:%d " fmt, ## args); \
@@ -399,7 +409,7 @@ static inline int ipa3_qmi_stop_data_qouta(void)
 
 static inline void ipa3_q6_handshake_complete(bool ssr_bootup) { }
 
-static inline int ipa3_wwan_set_modem_perf_profile(int throughput)
+static inline int ipa3_wwan_set_modem_perf_profile(int throughput);
 static inline int ipa3_qmi_enable_per_client_stats(
 	struct ipa_enable_per_client_stats_req_msg_v01 *req,
 	struct ipa_enable_per_client_stats_resp_msg_v01 *resp)

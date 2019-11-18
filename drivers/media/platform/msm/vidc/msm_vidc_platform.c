@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -120,7 +120,7 @@ static struct msm_vidc_common_data sdm845_common_data[] = {
 	},
 	{
 		.key = "qcom,max-secure-instances",
-		.value = 5,
+		.value = 2,
 	},
 	{
 		.key = "qcom,max-hw-load",
@@ -183,7 +183,7 @@ static struct msm_vidc_common_data sdm670_common_data_v0[] = {
 	},
 	{
 		.key = "qcom,max-hw-load",
-		.value = 1944000,
+		.value = 2219400,
 	},
 	{
 		.key = "qcom,max-hq-mbs-per-frame",

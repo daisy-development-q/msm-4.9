@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2016, 2018-2019 The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -12,7 +12,6 @@
 #ifndef DIAG_DCI_H
 #define DIAG_DCI_H
 
-#define MAX_DCI_CLIENTS		10
 #define DCI_PKT_RSP_CODE	0x93
 #define DCI_DELAYED_RSP_CODE	0x94
 #define DCI_CONTROL_PKT_CODE	0x9A
@@ -27,7 +26,7 @@
 #define DISABLE_LOG_MASK	0
 #define MAX_EVENT_SIZE		512
 #define DCI_CLIENT_INDEX_INVALID -1
-#define DCI_LOG_CON_MIN_LEN		14
+#define DCI_LOG_CON_MIN_LEN		16
 #define DCI_EVENT_CON_MIN_LEN		16
 
 #define EXT_HDR_LEN		8
@@ -323,6 +322,7 @@ unsigned char *dci_get_buffer_from_bridge(int token);
 int diag_dci_write_bridge(int token, unsigned char *buf, int len);
 int diag_dci_write_done_bridge(int index, unsigned char *buf, int len);
 int diag_dci_send_handshake_pkt(int index);
+int diag_dci_init_remote(void);
 #endif
 
 #endif

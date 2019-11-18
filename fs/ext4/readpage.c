@@ -91,7 +91,7 @@ static void mpage_end_io(struct bio *bio)
 		if (bio->bi_error) {
 			fscrypt_release_ctx(bio->bi_private);
 		} else {
-			fscrypt_decrypt_bio_pages(bio->bi_private, bio);
+			fscrypt_enqueue_decrypt_bio(bio->bi_private, bio);
 			return;
 		}
 	}
@@ -297,7 +297,8 @@ int ext4_mpage_readpages(struct address_space *mapping,
 			bio->bi_iter.bi_sector = blocks[0] << (blkbits - 9);
 			bio->bi_end_io = mpage_end_io;
 			bio->bi_private = ctx;
-			bio_set_op_attrs(bio, REQ_OP_READ, 0);
+			bio_set_op_attrs(bio, REQ_OP_READ,
+					 ctx ? REQ_NOENCRYPT : 0);
 		}
 
 		length = first_hole << blkbits;

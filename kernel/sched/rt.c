@@ -1805,7 +1805,6 @@ static int find_lowest_rq(struct task_struct *task)
 				}
 			}
 		} while (sg = sg->next, sg != sd->groups);
-		rcu_read_unlock();
 
 		if (sg_target) {
 			cpumask_and(&search_cpu, lowest_mask,
@@ -1836,7 +1835,7 @@ retry:
 			if (avoid_prev_cpu && cpu == prev_cpu)
 				continue;
 
-			if (__cpu_overutilized(cpu, util + tutil))
+			if (__cpu_overutilized(cpu, tutil))
 				continue;
 
 			if (cpu_isolated(cpu))
@@ -1894,6 +1893,7 @@ retry:
 		}
 
 		if (best_cpu != -1 && placement_boost != SCHED_BOOST_ON_ALL) {
+			rcu_read_unlock();
 			return best_cpu;
 		} else if (!cpumask_empty(&backup_search_cpu)) {
 			cpumask_copy(&search_cpu, &backup_search_cpu);
@@ -1902,6 +1902,7 @@ retry:
 			placement_boost = SCHED_BOOST_NONE;
 			goto retry;
 		}
+		rcu_read_unlock();
 	}
 
 noea:

@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2017, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -49,6 +49,16 @@
 #define IPAWANERR(fmt, args...) \
 	do { \
 		pr_err(DEV_NAME " %s:%d " fmt, __func__, __LINE__, ## args); \
+		IPA_IPC_LOGGING(ipa_get_ipc_logbuf(), \
+			DEV_NAME " %s:%d " fmt, ## args); \
+		IPA_IPC_LOGGING(ipa_get_ipc_logbuf_low(), \
+			DEV_NAME " %s:%d " fmt, ## args); \
+	} while (0)
+
+#define IPAWANERR_RL(fmt, args...) \
+	do { \
+		pr_err_ratelimited_ipa(DEV_NAME " %s:%d " fmt, __func__,\
+			__LINE__, ## args); \
 		IPA_IPC_LOGGING(ipa_get_ipc_logbuf(), \
 			DEV_NAME " %s:%d " fmt, ## args); \
 		IPA_IPC_LOGGING(ipa_get_ipc_logbuf_low(), \
@@ -281,7 +291,7 @@ static inline void ipa_broadcast_quota_reach_ind
 {
 }
 
-static int rmnet_ipa_reset_tethering_stats
+static inline int rmnet_ipa_reset_tethering_stats
 (
 	struct wan_ioctl_reset_tether_stats *data
 )

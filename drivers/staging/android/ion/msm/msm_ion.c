@@ -122,6 +122,10 @@ static struct ion_heap_desc ion_heap_meta[] = {
 	{
 		.id	= ION_SECURE_DISPLAY_HEAP_ID,
 		.name	= ION_SECURE_DISPLAY_HEAP_NAME,
+	},
+	{
+		.id	= ION_SECURE_CARVEOUT_HEAP_ID,
+		.name	= ION_SECURE_CARVEOUT_HEAP_NAME,
 	}
 };
 #endif
@@ -443,6 +447,7 @@ static struct heap_types_info {
 	MAKE_HEAP_TYPE_MAPPING(SYSTEM),
 	MAKE_HEAP_TYPE_MAPPING(SYSTEM_CONTIG),
 	MAKE_HEAP_TYPE_MAPPING(CARVEOUT),
+	MAKE_HEAP_TYPE_MAPPING(SECURE_CARVEOUT),
 	MAKE_HEAP_TYPE_MAPPING(CHUNK),
 	MAKE_HEAP_TYPE_MAPPING(DMA),
 	MAKE_HEAP_TYPE_MAPPING(SECURE_DMA),
@@ -786,16 +791,13 @@ long msm_ion_custom_ioctl(struct ion_client *client,
 		struct mm_struct *mm = current->active_mm;
 
 		if (data.flush_data.handle > 0) {
-			mutex_lock(&client->lock);
-			handle = ion_handle_get_by_id_nolock(
+			handle = ion_handle_get_by_id(
 					client, (int)data.flush_data.handle);
 			if (IS_ERR(handle)) {
-				mutex_unlock(&client->lock);
 				pr_info("%s: Could not find handle: %d\n",
 					__func__, (int)data.flush_data.handle);
 				return PTR_ERR(handle);
 			}
-			mutex_unlock(&client->lock);
 		} else {
 			handle = ion_import_dma_buf_fd(client,
 						       data.flush_data.fd);
@@ -812,7 +814,7 @@ long msm_ion_custom_ioctl(struct ion_client *client,
 			data.flush_data.offset;
 		end = start + data.flush_data.length;
 
-		if (check_vaddr_bounds(start, end)) {
+		if (start && check_vaddr_bounds(start, end)) {
 			pr_err("%s: virtual address %pK is out of bounds\n",
 			       __func__, data.flush_data.vaddr);
 			ret = -EINVAL;
@@ -916,6 +918,7 @@ int msm_ion_heap_pages_zero(struct page **pages, int num_pages)
 
 		memset(ptr, 0, npages_to_vmap * PAGE_SIZE);
 		vunmap(ptr);
+		ptr = NULL;
 	}
 
 	return 0;
@@ -1023,6 +1026,9 @@ static struct ion_heap *msm_ion_heap_create(struct ion_platform_heap *heap_data)
 	case ION_HEAP_TYPE_HYP_CMA:
 		heap = ion_cma_secure_heap_create(heap_data);
 		break;
+	case ION_HEAP_TYPE_SECURE_CARVEOUT:
+		heap = ion_secure_carveout_heap_create(heap_data);
+		break;
 	default:
 		heap = ion_heap_create(heap_data);
 	}
@@ -1057,6 +1063,9 @@ static void msm_ion_heap_destroy(struct ion_heap *heap)
 
 	case ION_HEAP_TYPE_HYP_CMA:
 		ion_cma_secure_heap_destroy(heap);
+		break;
+	case ION_HEAP_TYPE_SECURE_CARVEOUT:
+		ion_secure_carveout_heap_destroy(heap);
 		break;
 	default:
 		ion_heap_destroy(heap);

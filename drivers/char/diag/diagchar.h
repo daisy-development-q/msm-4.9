@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2008-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -22,6 +22,7 @@
 #include <linux/workqueue.h>
 #include <linux/sched.h>
 #include <linux/device.h>
+#include <soc/qcom/smd.h>
 #include <linux/atomic.h>
 #include "diagfwd_bridge.h"
 
@@ -35,7 +36,11 @@
 
 #define DIAG_MAX_REQ_SIZE	(16 * 1024)
 #define DIAG_MAX_RSP_SIZE	(16 * 1024)
+#ifdef CONFIG_USB_CI13XXX_MSM
+#define APF_DIAG_PADDING	256
+#else
 #define APF_DIAG_PADDING	0
+#endif
 /*
  * In the worst case, the HDLC buffer can be atmost twice the size of the
  * original packet. Add 3 bytes for 16 bit CRC (2 bytes) and a delimiter
@@ -283,6 +288,7 @@ for (i = 0; i <= fwd_info->num_pd - 2; i++)	\
 #define DIAG_CNTL_TYPE		2
 #define DIAG_DCI_TYPE		3
 
+#define MAX_DCI_CLIENTS		10
 /*
  * List of diag ids
  * 0 is reserved for unknown diag id, 1 for apps, diag ids
@@ -474,6 +480,12 @@ struct diag_logging_mode_param_t {
 	int peripheral;
 } __packed;
 
+struct diag_query_pid_t {
+	uint32_t peripheral_mask;
+	uint32_t pd_mask;
+	int pid;
+};
+
 struct diag_md_session_t {
 	int pid;
 	int peripheral_mask;
@@ -539,8 +551,6 @@ struct diagchar_dev {
 	struct class *diagchar_class;
 	struct device *diag_dev;
 	int ref_count;
-	int mask_clear;
-	struct mutex diag_maskclear_mutex;
 	struct mutex diag_notifier_mutex;
 	struct mutex diagchar_mutex;
 	struct mutex diag_file_mutex;
@@ -577,7 +587,7 @@ struct diagchar_dev {
 	struct list_head dci_req_list;
 	struct list_head dci_client_list;
 	int dci_tag;
-	int dci_client_id;
+	int dci_client_id[MAX_DCI_CLIENTS];
 	struct mutex dci_mutex;
 	int num_dci_client;
 	unsigned char *apps_dci_buf;
@@ -594,6 +604,7 @@ struct diagchar_dev {
 	unsigned int poolsize_hdlc;
 	unsigned int poolsize_dci;
 	unsigned int poolsize_user;
+	spinlock_t diagmem_lock;
 	/* Buffers for masks */
 	struct mutex diag_cntl_mutex;
 	/* Members for Sending response */
@@ -619,6 +630,7 @@ struct diagchar_dev {
 	/* buffer for updating mask to peripherals */
 	unsigned char *buf_feature_mask_update;
 	uint8_t hdlc_disabled;
+	uint8_t p_hdlc_disabled[NUM_MD_SESSIONS];
 	struct mutex hdlc_disable_mutex;
 	struct mutex hdlc_recovery_mutex;
 	struct timer_list hdlc_reset_timer;
@@ -643,6 +655,7 @@ struct diagchar_dev {
 	struct work_struct diag_drain_work;
 	struct work_struct update_user_clients;
 	struct work_struct update_md_clients;
+	struct work_struct diag_hdlc_reset_work;
 	struct workqueue_struct *diag_cntl_wq;
 	uint8_t log_on_demand_support;
 	uint8_t *apps_req_buf;
@@ -669,6 +682,7 @@ struct diagchar_dev {
 	struct diag_mask_info *log_mask;
 	struct diag_mask_info *event_mask;
 	struct diag_mask_info *build_time_mask;
+	uint8_t set_mask_cmd;
 	uint8_t msg_mask_tbl_count;
 	uint8_t bt_msg_mask_tbl_count;
 	uint16_t event_mask_size;
@@ -725,5 +739,6 @@ void diag_record_stats(int type, int flag);
 
 struct diag_md_session_t *diag_md_session_get_pid(int pid);
 struct diag_md_session_t *diag_md_session_get_peripheral(uint8_t peripheral);
+int diag_md_session_match_pid_peripheral(int pid, uint8_t peripheral);
 
 #endif

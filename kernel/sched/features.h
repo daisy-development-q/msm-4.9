@@ -26,6 +26,12 @@ SCHED_FEAT(NEXT_BUDDY, false)
 SCHED_FEAT(LAST_BUDDY, true)
 
 /*
+ * skip buddy i.e task called yield() is always skipped and the
+ * next entity is selected to run irrespective of the vruntime
+ */
+SCHED_FEAT(STRICT_SKIP_BUDDY, true)
+
+/*
  * Consider buddies to be cache hot, decreases the likelyness of a
  * cache buddy being migrated away, increases cache locality.
  */
@@ -35,6 +41,12 @@ SCHED_FEAT(CACHE_HOT_BUDDY, true)
  * Allow wakeup-time preemption of the current task:
  */
 SCHED_FEAT(WAKEUP_PREEMPTION, true)
+
+/*
+ * Use arch dependent cpu capacity functions
+ */
+SCHED_FEAT(ARCH_CAPACITY, true)
+SCHED_FEAT(ARCH_POWER, true)
 
 SCHED_FEAT(HRTICK, false)
 SCHED_FEAT(DOUBLE_TICK, false)
@@ -83,3 +95,24 @@ SCHED_FEAT(ENERGY_AWARE, true)
 #else
 SCHED_FEAT(ENERGY_AWARE, false)
 #endif
+
+/*
+ * Minimum capacity capping. Keep track of minimum capacity factor when
+ * minimum frequency available to a policy is modified.
+ * If enabled, this can be used to inform the scheduler about capacity
+ * restrictions.
+ */
+SCHED_FEAT(MIN_CAPACITY_CAPPING, true)
+
+/*
+ * Enforce the priority of candidates selected by find_best_target()
+ * ON: If the target CPU saves any energy, use that.
+ * OFF: Use whichever of target or backup saves most.
+ */
+SCHED_FEAT(FBT_STRICT_ORDER, false)
+/*
+ * Enforce schedtune.prefer_idle to take need_idle path.
+ * ON: schedtune.prefer_idle is replaced with need_idle
+ * OFF: schedtune.prefer_idle is honored as is.
+ */
+SCHED_FEAT(EAS_USE_NEED_IDLE, true)

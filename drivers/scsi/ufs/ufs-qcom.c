@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2018, Linux Foundation. All rights reserved.
+ * Copyright (c) 2013-2019, Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -727,6 +727,11 @@ static int ufs_qcom_config_vreg(struct device *dev,
 
 	reg = vreg->reg;
 	if (regulator_count_voltages(reg) > 0) {
+		uA_load = on ? vreg->max_uA : 0;
+		ret = regulator_set_load(vreg->reg, uA_load);
+		if (ret)
+			goto out;
+
 		min_uV = on ? vreg->min_uV : 0;
 		ret = regulator_set_voltage(reg, min_uV, vreg->max_uV);
 		if (ret) {
@@ -734,11 +739,6 @@ static int ufs_qcom_config_vreg(struct device *dev,
 					__func__, vreg->name, ret);
 			goto out;
 		}
-
-		uA_load = on ? vreg->max_uA : 0;
-		ret = regulator_set_load(vreg->reg, uA_load);
-		if (ret)
-			goto out;
 	}
 out:
 	return ret;
@@ -900,6 +900,7 @@ static int ufs_qcom_crypto_req_setup(struct ufs_hba *hba,
 
 	/* Use request LBA or given dun as the DUN value */
 	if (req->bio) {
+#ifdef CONFIG_PFK
 		if (bio_dun(req->bio)) {
 			/* dun @bio can be split, so we have to adjust offset */
 			*dun = bio_dun(req->bio);
@@ -907,6 +908,10 @@ static int ufs_qcom_crypto_req_setup(struct ufs_hba *hba,
 			*dun = req->bio->bi_iter.bi_sector;
 			*dun >>= UFS_QCOM_ICE_TR_DATA_UNIT_4_KB;
 		}
+#else
+		*dun = req->bio->bi_iter.bi_sector;
+		*dun >>= UFS_QCOM_ICE_TR_DATA_UNIT_4_KB;
+#endif
 	}
 
 	ret = ufs_qcom_ice_req_setup(host, lrbp->cmd, cc_index, enable);
@@ -1303,11 +1308,11 @@ static void ufs_qcom_dev_ref_clk_ctrl(struct ufs_qcom_host *host, bool enable)
 		/*
 		 * If we are here to disable this clock it might be immediately
 		 * after entering into hibern8 in which case we need to make
-		 * sure that device ref_clk is active at least 1us after the
-		 * hibern8 enter.
+		 * sure that device ref_clk is active for a given time after the
+		 * hibern8 enter for pre UFS3.0 devices
 		 */
 		if (!enable)
-			udelay(1);
+			udelay(host->hba->dev_ref_clk_gating_wait);
 
 		writel_relaxed(temp, host->dev_ref_clk_ctrl_mmio);
 
@@ -1316,11 +1321,16 @@ static void ufs_qcom_dev_ref_clk_ctrl(struct ufs_qcom_host *host, bool enable)
 
 		/*
 		 * If we call hibern8 exit after this, we need to make sure that
-		 * device ref_clk is stable for at least 1us before the hibern8
+		 * device ref_clk is stable for a given time before the hibern8
 		 * exit command.
 		 */
-		if (enable)
-			udelay(1);
+		if (enable) {
+			if (host->hba->dev_info.quirks &
+			    UFS_DEVICE_QUIRK_WAIT_AFTER_REF_CLK_UNGATE)
+				usleep_range(50, 60);
+			else
+				udelay(1);
+		}
 
 		host->is_dev_ref_clk_enabled = enable;
 	}
@@ -2507,7 +2517,7 @@ bool ufs_qcom_testbus_cfg_is_ok(struct ufs_qcom_host *host,
 int ufs_qcom_testbus_config(struct ufs_qcom_host *host)
 {
 	int reg = 0;
-	int offset, ret = 0, testbus_sel_offset = 19;
+	int offset = -1, ret = 0, testbus_sel_offset = 19;
 	u32 mask = TEST_BUS_SUB_SEL_MASK;
 	unsigned long flags;
 	struct ufs_hba *hba;
@@ -2572,6 +2582,12 @@ int ufs_qcom_testbus_config(struct ufs_qcom_host *host)
 	 * is legal
 	 */
 	}
+	if (offset < 0) {
+		dev_err(hba->dev, "%s: Bad offset: %d\n", __func__, offset);
+		ret = -EINVAL;
+		spin_unlock_irqrestore(hba->host->host_lock, flags);
+		goto out;
+	}
 	mask <<= offset;
 
 	spin_unlock_irqrestore(hba->host->host_lock, flags);
@@ -2623,6 +2639,27 @@ static void ufs_qcom_print_unipro_testbus(struct ufs_hba *hba)
 	kfree(testbus);
 }
 
+static void ufs_qcom_print_utp_hci_testbus(struct ufs_hba *hba)
+{
+	struct ufs_qcom_host *host = ufshcd_get_variant(hba);
+	u32 *testbus = NULL;
+	int i, nminor = 32, testbus_len = nminor * sizeof(u32);
+
+	testbus = kmalloc(testbus_len, GFP_KERNEL);
+	if (!testbus)
+		return;
+
+	host->testbus.select_major = TSTBUS_UTP_HCI;
+	for (i = 0; i < nminor; i++) {
+		host->testbus.select_minor = i;
+		ufs_qcom_testbus_config(host);
+		testbus[i] = ufshcd_readl(hba, UFS_TEST_BUS);
+	}
+	print_hex_dump(KERN_ERR, "UTP_HCI_TEST_BUS ", DUMP_PREFIX_OFFSET,
+			16, 4, testbus, testbus_len, false);
+	kfree(testbus);
+}
+
 static void ufs_qcom_dump_dbg_regs(struct ufs_hba *hba, bool no_sleep)
 {
 	struct ufs_qcom_host *host = ufshcd_get_variant(hba);
@@ -2640,6 +2677,8 @@ static void ufs_qcom_dump_dbg_regs(struct ufs_hba *hba, bool no_sleep)
 	ufs_qcom_testbus_read(hba);
 	usleep_range(1000, 1100);
 	ufs_qcom_print_unipro_testbus(hba);
+	usleep_range(1000, 1100);
+	ufs_qcom_print_utp_hci_testbus(hba);
 	usleep_range(1000, 1100);
 	ufs_qcom_phy_dbg_register_dump(phy);
 	usleep_range(1000, 1100);
@@ -2719,7 +2758,7 @@ static int ufs_qcom_probe(struct platform_device *pdev)
 	 * the regulators.
 	 */
 	if (of_property_read_bool(np, "non-removable") &&
-	    strlen(android_boot_dev) &&
+	    !of_property_read_bool(np, "force-ufshc-probe") &&
 	    strcmp(android_boot_dev, dev_name(dev)))
 		return -ENODEV;
 

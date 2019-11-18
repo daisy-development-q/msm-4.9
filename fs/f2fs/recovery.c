@@ -144,7 +144,7 @@ static int recover_dentry(struct inode *inode, struct page *ipage,
 retry:
 	de = __f2fs_find_entry(dir, &fname, &page);
 	if (de && inode->i_ino == le32_to_cpu(de->ino))
-		goto out_unmap_put;
+		goto out_put;
 
 	if (de) {
 		einode = f2fs_iget_retry(inode->i_sb, le32_to_cpu(de->ino));
@@ -153,19 +153,19 @@ retry:
 			err = PTR_ERR(einode);
 			if (err == -ENOENT)
 				err = -EEXIST;
-			goto out_unmap_put;
+			goto out_put;
 		}
 
 		err = dquot_initialize(einode);
 		if (err) {
 			iput(einode);
-			goto out_unmap_put;
+			goto out_put;
 		}
 
 		err = acquire_orphan_inode(F2FS_I_SB(inode));
 		if (err) {
 			iput(einode);
-			goto out_unmap_put;
+			goto out_put;
 		}
 		f2fs_delete_entry(de, page, dir, einode);
 		iput(einode);
@@ -180,8 +180,7 @@ retry:
 		goto retry;
 	goto out;
 
-out_unmap_put:
-	f2fs_dentry_kunmap(dir, page);
+out_put:
 	f2fs_put_page(page, 0);
 out:
 	if (file_enc_name(inode))
@@ -224,6 +223,8 @@ static void recover_inode(struct inode *inode, struct page *page)
 	inode->i_mtime.tv_nsec = le32_to_cpu(raw->i_mtime_nsec);
 
 	F2FS_I(inode)->i_advise = raw->i_advise;
+	F2FS_I(inode)->i_gc_failures =
+			le16_to_cpu(raw->i_gc_failures);
 
 	recover_inline_flags(inode, raw);
 
@@ -243,6 +244,9 @@ static int find_fsync_dnodes(struct f2fs_sb_info *sbi, struct list_head *head,
 	struct curseg_info *curseg;
 	struct page *page = NULL;
 	block_t blkaddr;
+	unsigned int loop_cnt = 0;
+	unsigned int free_blocks = sbi->user_block_count -
+					valid_user_blocks(sbi);
 	int err = 0;
 
 	/* get node pages in the current segment */
@@ -295,6 +299,17 @@ static int find_fsync_dnodes(struct f2fs_sb_info *sbi, struct list_head *head,
 		if (IS_INODE(page) && is_dent_dnode(page))
 			entry->last_dentry = blkaddr;
 next:
+		/* sanity check in order to detect looped node chain */
+		if (++loop_cnt >= free_blocks ||
+			blkaddr == next_blkaddr_of_node(page)) {
+			f2fs_msg(sbi->sb, KERN_NOTICE,
+				"%s: detect looped node chain, "
+				"blkaddr:%u, next:%u",
+				__func__, blkaddr, next_blkaddr_of_node(page));
+			err = -EINVAL;
+			break;
+		}
+
 		/* check next segment */
 		blkaddr = next_blkaddr_of_node(page);
 		f2fs_put_page(page, 1);
@@ -461,7 +476,15 @@ retry_dn:
 
 	get_node_info(sbi, dn.nid, &ni);
 	f2fs_bug_on(sbi, ni.ino != ino_of_node(page));
-	f2fs_bug_on(sbi, ofs_of_node(dn.node_page) != ofs_of_node(page));
+
+	if (ofs_of_node(dn.node_page) != ofs_of_node(page)) {
+		f2fs_msg(sbi->sb, KERN_WARNING,
+			"Inconsistent ofs_of_node, ino:%lu, ofs:%u, %u",
+			inode->i_ino, ofs_of_node(dn.node_page),
+			ofs_of_node(page));
+		err = -EFAULT;
+		goto err;
+	}
 
 	for (; start < end; start++, dn.ofs_in_node++) {
 		block_t src, dest;

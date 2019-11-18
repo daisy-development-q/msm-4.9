@@ -1,4 +1,4 @@
-/* Copyright (c) 2014-2017, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2014-2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -31,8 +31,8 @@
 #include <linux/qpnp/qpnp-revid.h>
 #include <linux/debugfs.h>
 #include <linux/uaccess.h>
+#include <linux/string.h>
 #include "leds.h"
-
 #define FLASH_LED_PERIPHERAL_SUBTYPE(base)			(base + 0x05)
 #define FLASH_SAFETY_TIMER(base)				(base + 0x40)
 #define FLASH_MAX_CURRENT(base)					(base + 0x41)
@@ -174,6 +174,11 @@ struct flash_regulator_data {
 	u32			max_volt_uv;
 };
 
+#ifdef CONFIG_FLASHLIGHT_SAKURA
+char flashlight[] = {"flashlight"};
+char flashlight_switch[] = {"led:switch"};
+struct led_trigger *flashlight_switch_trigger = NULL;
+#endif
 /*
  * Configurations for each individual LED
  */
@@ -1207,7 +1212,7 @@ error_regulator_enable:
 	return rc;
 }
 
-int qpnp_flash_led_prepare(struct led_trigger *trig, int options,
+static int qpnp_flash_led_prepare_v1(struct led_trigger *trig, int options,
 					int *max_current)
 {
 	struct led_classdev *led_cdev = trigger_to_lcdev(trig);
@@ -1336,6 +1341,18 @@ static void qpnp_flash_led_work(struct work_struct *work)
 					"INT_LATCHED_CLR write failed\n");
 			goto exit_flash_led_work;
 		}
+	}
+
+	if (led->flash_node[led->num_leds - 1].id == FLASH_LED_SWITCH &&
+					flash_node->id != FLASH_LED_SWITCH) {
+		led->flash_node[led->num_leds - 1].trigger |=
+						(0x80 >> flash_node->id);
+		if (flash_node->id == FLASH_LED_0)
+			led->flash_node[led->num_leds - 1].prgm_current =
+						flash_node->prgm_current;
+		else if (flash_node->id == FLASH_LED_1)
+			led->flash_node[led->num_leds - 1].prgm_current2 =
+						flash_node->prgm_current;
 	}
 
 	if (led->flash_node[led->num_leds - 1].id == FLASH_LED_SWITCH &&
@@ -1734,19 +1751,17 @@ static void qpnp_flash_led_work(struct work_struct *work)
 			}
 			led->fault_reg = temp;
 		}
-	} else {
-		pr_err("Both Torch and Flash cannot be select at same time\n");
-		for (i = 0; i < led->num_leds; i++)
-			led->flash_node[i].flash_on = false;
-		goto turn_off;
-	}
-
+	} 
 	flash_node->flash_on = true;
 	mutex_unlock(&led->flash_led_lock);
 
 	return;
 
 turn_off:
+	if (led->flash_node[led->num_leds - 1].id == FLASH_LED_SWITCH &&
+					flash_node->id != FLASH_LED_SWITCH)
+		led->flash_node[led->num_leds - 1].trigger &=
+						~(0x80 >> flash_node->id);
 	if (led->flash_node[led->num_leds - 1].id == FLASH_LED_SWITCH &&
 					flash_node->id != FLASH_LED_SWITCH)
 		led->flash_node[led->num_leds - 1].trigger &=
@@ -1860,11 +1875,6 @@ static void qpnp_flash_led_brightness_set(struct led_classdev *led_cdev,
 
 			flash_node->prgm_current = value;
 			flash_node->flash_on = value ? true : false;
-		} else if (flash_node->id == FLASH_LED_SWITCH) {
-			if (!value) {
-				flash_node->prgm_current = 0;
-				flash_node->prgm_current2 = 0;
-			}
 		}
 	} else {
 		if (value < FLASH_LED_MIN_CURRENT_MA && value != 0)
@@ -1874,6 +1884,18 @@ static void qpnp_flash_led_brightness_set(struct led_classdev *led_cdev,
 
 	queue_work(led->ordered_workq, &flash_node->work);
 }
+
+#ifdef CONFIG_FLASHLIGHT_SAKURA
+/* lancelot add for mi flashlight*/
+static void mido_flash_led_brightness_set(struct led_classdev *led_cdev,
+						enum led_brightness value)
+{
+	printk(KERN_ERR "lancelot sakura mido_flash_led_brightness_set value %d.\n", value);
+	qpnp_flash_led_brightness_set(led_cdev,value);
+	led_trigger_event(flashlight_switch_trigger,(value?1:0));
+}
+/* lancelot add end*/
+#endif
 
 static int qpnp_flash_led_init_settings(struct qpnp_flash_led *led)
 {
@@ -2226,7 +2248,6 @@ static int qpnp_flash_led_parse_common_dt(
 					"Invalid thermal derate rate\n");
 				return -EINVAL;
 			}
-
 			led->pdata->thermal_derate_rate = (u8)temp_val;
 		} else {
 			dev_err(&led->pdev->dev,
@@ -2468,16 +2489,18 @@ static int qpnp_flash_led_probe(struct platform_device *pdev)
 	led->pdev = pdev;
 	led->current_addr = FLASH_LED0_CURRENT(led->base);
 	led->current2_addr = FLASH_LED1_CURRENT(led->base);
+	qpnp_flash_led_prepare = qpnp_flash_led_prepare_v1;
 
 	led->pdata = devm_kzalloc(&pdev->dev, sizeof(*led->pdata), GFP_KERNEL);
 	if (!led->pdata)
 		return -ENOMEM;
 
-	led->peripheral_type = (u8)qpnp_flash_led_get_peripheral_type(led);
-	if (led->peripheral_type < 0) {
+	rc = qpnp_flash_led_get_peripheral_type(led);
+	if (rc < 0) {
 		dev_err(&pdev->dev, "Failed to get peripheral type\n");
 		return rc;
 	}
+	led->peripheral_type = (u8) rc;
 
 	rc = qpnp_flash_led_parse_common_dt(led, node);
 	if (rc) {
@@ -2520,6 +2543,7 @@ static int qpnp_flash_led_probe(struct platform_device *pdev)
 	}
 
 	for_each_child_of_node(node, temp) {
+		j = -1;
 		led->flash_node[i].cdev.brightness_set =
 						qpnp_flash_led_brightness_set;
 		led->flash_node[i].cdev.brightness_get =
@@ -2534,6 +2558,13 @@ static int qpnp_flash_led_probe(struct platform_device *pdev)
 					"Unable to read flash name\n");
 			return rc;
 		}
+
+#ifdef CONFIG_FLASHLIGHT_SAKURA
+		if (!strncmp(led->flash_node[i].cdev.name,flashlight,strlen(flashlight)))
+		{
+			led->flash_node[i].cdev.brightness_set = mido_flash_led_brightness_set;
+		}
+#endif
 
 		rc = of_property_read_string(temp, "qcom,default-led-trigger",
 				&led->flash_node[i].cdev.default_trigger);
@@ -2560,6 +2591,13 @@ static int qpnp_flash_led_probe(struct platform_device *pdev)
 			dev_err(&pdev->dev, "Unable to register led\n");
 			goto error_led_register;
 		}
+
+#ifdef CONFIG_FLASHLIGHT_SAKURA
+		if (!strncmp(led->flash_node[i].cdev.name,flashlight_switch,strlen(flashlight_switch)))
+		{
+			flashlight_switch_trigger = led->flash_node[i].cdev.trigger;
+		}
+#endif
 
 		led->flash_node[i].cdev.dev->of_node = temp;
 
@@ -2594,7 +2632,6 @@ static int qpnp_flash_led_probe(struct platform_device *pdev)
 			if (rc)
 				goto error_led_register;
 		}
-
 		i++;
 	}
 
@@ -2606,7 +2643,7 @@ static int qpnp_flash_led_probe(struct platform_device *pdev)
 			(long)root);
 		if (PTR_ERR(root) == -ENODEV)
 			pr_err("debugfs is not enabled in kernel");
-		goto error_led_debugfs;
+		goto error_free_led_sysfs;
 	}
 
 	led->dbgfs_root = root;
@@ -2636,6 +2673,8 @@ static int qpnp_flash_led_probe(struct platform_device *pdev)
 	return 0;
 
 error_led_debugfs:
+	debugfs_remove_recursive(root);
+error_free_led_sysfs:
 	i = led->num_leds - 1;
 	j = ARRAY_SIZE(qpnp_flash_led_attrs) - 1;
 error_led_register:
@@ -2646,7 +2685,6 @@ error_led_register:
 		j = ARRAY_SIZE(qpnp_flash_led_attrs) - 1;
 		led_classdev_unregister(&led->flash_node[i].cdev);
 	}
-	debugfs_remove_recursive(root);
 	mutex_destroy(&led->flash_led_lock);
 	destroy_workqueue(led->ordered_workq);
 

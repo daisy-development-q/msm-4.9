@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2017-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -272,9 +272,10 @@ int32_t cam_context_prepare_dev_to_hw(struct cam_context *ctx,
 	int rc = 0;
 	struct cam_ctx_request *req = NULL;
 	struct cam_hw_prepare_update_args cfg;
-	uint64_t packet_addr;
+	uintptr_t packet_addr;
 	struct cam_packet *packet;
 	size_t len = 0;
+	size_t remain_len = 0;
 	int32_t i = 0, j = 0;
 
 	if (!ctx || !cmd) {
@@ -315,8 +316,7 @@ int32_t cam_context_prepare_dev_to_hw(struct cam_context *ctx,
 	/* for config dev, only memory handle is supported */
 	/* map packet from the memhandle */
 	rc = cam_mem_get_cpu_buf((int32_t) cmd->packet_handle,
-		(uint64_t *) &packet_addr,
-		&len);
+		&packet_addr, &len);
 	if (rc != 0) {
 		CAM_ERR(CAM_CTXT, "[%s][%d] Can not get packet address",
 			ctx->dev_name, ctx->ctx_id);
@@ -324,11 +324,21 @@ int32_t cam_context_prepare_dev_to_hw(struct cam_context *ctx,
 		goto free_req;
 	}
 
-	packet = (struct cam_packet *) (packet_addr + cmd->offset);
+	remain_len = len;
+	if ((len < sizeof(struct cam_packet)) ||
+		((size_t)cmd->offset >= len - sizeof(struct cam_packet))) {
+		CAM_ERR(CAM_CTXT, "invalid buff length: %zu or offset", len);
+		return -EINVAL;
+	}
+
+	remain_len -= (size_t)cmd->offset;
+	packet = (struct cam_packet *) ((uint8_t *)packet_addr +
+		(uint32_t)cmd->offset);
 
 	/* preprocess the configuration */
 	memset(&cfg, 0, sizeof(cfg));
 	cfg.packet = packet;
+	cfg.remain_len = remain_len;
 	cfg.ctxt_to_hw_map = ctx->ctxt_to_hw_map;
 	cfg.max_hw_update_entries = CAM_CTX_CFG_MAX;
 	cfg.num_hw_update_entries = req->num_hw_update_entries;
@@ -337,6 +347,7 @@ int32_t cam_context_prepare_dev_to_hw(struct cam_context *ctx,
 	cfg.out_map_entries = req->out_map_entries;
 	cfg.max_in_map_entries = CAM_CTX_CFG_MAX;
 	cfg.in_map_entries = req->in_map_entries;
+	cfg.pf_data = &(req->pf_data);
 
 	rc = ctx->hw_mgr_intf->hw_prepare_update(
 		ctx->hw_mgr_intf->hw_mgr_priv, &cfg);
@@ -900,6 +911,41 @@ int32_t cam_context_stop_dev_to_hw(struct cam_context *ctx)
 		stop.ctxt_to_hw_map = ctx->ctxt_to_hw_map;
 		ctx->hw_mgr_intf->hw_stop(ctx->hw_mgr_intf->hw_mgr_priv,
 			&stop);
+	}
+
+end:
+	return rc;
+}
+
+int32_t cam_context_dump_pf_info_to_hw(struct cam_context *ctx,
+	struct cam_packet *packet, unsigned long iova, uint32_t buf_info,
+	bool *mem_found)
+{
+	int rc = 0;
+	struct cam_hw_cmd_args cmd_args;
+
+	if (!ctx) {
+		CAM_ERR(CAM_CTXT, "Invalid input params %pK ", ctx);
+		rc = -EINVAL;
+		goto end;
+	}
+
+	if (!ctx->hw_mgr_intf) {
+		CAM_ERR(CAM_CTXT, "[%s][%d] HW interface is not ready",
+			ctx->dev_name, ctx->ctx_id);
+		rc = -EFAULT;
+		goto end;
+	}
+
+	if (ctx->hw_mgr_intf->hw_cmd) {
+		cmd_args.ctxt_to_hw_map = ctx->ctxt_to_hw_map;
+		cmd_args.cmd_type = CAM_HW_MGR_CMD_DUMP_PF_INFO;
+		cmd_args.u.pf_args.pf_data.packet = packet;
+		cmd_args.u.pf_args.iova = iova;
+		cmd_args.u.pf_args.buf_info = buf_info;
+		cmd_args.u.pf_args.mem_found = mem_found;
+		ctx->hw_mgr_intf->hw_cmd(ctx->hw_mgr_intf->hw_mgr_priv,
+			&cmd_args);
 	}
 
 end:

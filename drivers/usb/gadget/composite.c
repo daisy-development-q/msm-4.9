@@ -20,6 +20,7 @@
 
 #include <linux/usb/composite.h>
 #include <linux/usb/otg.h>
+#include <linux/usb/msm_hsusb.h>
 #include <asm/unaligned.h>
 
 #include "u_os_desc.h"
@@ -36,7 +37,7 @@
 	 SSUSB_GADGET_VBUS_DRAW : CONFIG_USB_GADGET_VBUS_DRAW)
 
 /* disable LPM by default */
-static bool disable_l1_for_hs = true;
+static bool disable_l1_for_hs;
 module_param(disable_l1_for_hs, bool, 0644);
 MODULE_PARM_DESC(disable_l1_for_hs,
 	"Disable support for L1 LPM for HS devices");
@@ -489,9 +490,15 @@ int usb_func_wakeup(struct usb_function *func)
 
 	spin_lock_irqsave(&func->config->cdev->lock, flags);
 	ret = usb_func_wakeup_int(func);
-	if (ret == -EAGAIN) {
+	if (ret == -EACCES) {
 		DBG(func->config->cdev,
 			"Function wakeup for %s could not complete due to suspend state. Delayed until after bus resume.\n",
+			func->name ? func->name : "");
+		ret = 0;
+		func->func_wakeup_pending = 1;
+	} else if (ret == -EAGAIN) {
+		DBG(func->config->cdev,
+			"Function wakeup for %s sent.\n",
 			func->name ? func->name : "");
 		ret = 0;
 	} else if (ret < 0 && ret != -ENOTSUPP) {
@@ -523,14 +530,25 @@ int usb_func_ep_queue(struct usb_function *func, struct usb_ep *ep,
 	gadget = func->config->cdev->gadget;
 	if (func->func_is_suspended && func->func_wakeup_allowed) {
 		ret = usb_gadget_func_wakeup(gadget, func->intf_id);
-		if (ret == -EAGAIN) {
+		if (ret == -EACCES) {
+			pr_debug("bus suspended func wakeup for %s delayed until bus resume.\n",
+				func->name ? func->name : "");
+			func->func_wakeup_pending = 1;
+			ret = -EAGAIN;
+		} else if (ret == -EAGAIN) {
 			pr_debug("bus suspended func wakeup for %s delayed until bus resume.\n",
 				func->name ? func->name : "");
 		} else if (ret < 0 && ret != -ENOTSUPP) {
 			pr_err("Failed to wake function %s from suspend state. ret=%d.\n",
 				func->name ? func->name : "", ret);
+		} else {
+			/*
+			 * Return -EAGAIN to queue the request from
+			 * function driver wakeup function.
+			 */
+			ret = -EAGAIN;
+			goto done;
 		}
-		goto done;
 	}
 
 	if (!func->func_is_suspended)
@@ -582,6 +600,10 @@ static int config_buf(struct usb_configuration *config,
 	c->iConfiguration = config->iConfiguration;
 	c->bmAttributes = USB_CONFIG_ATT_ONE | config->bmAttributes;
 	c->bMaxPower = encode_bMaxPower(speed, config);
+	if (config->cdev->gadget->self_powered) {
+		c->bmAttributes |= USB_CONFIG_ATT_SELFPOWER;
+		c->bMaxPower = 0;
+	}
 
 	/* There may be e.g. OTG descriptors */
 	if (config->descriptors) {
@@ -856,6 +878,11 @@ static void reset_config(struct usb_composite_dev *cdev)
 
 	DBG(cdev, "reset config\n");
 
+	if (!cdev->config) {
+		pr_err("%s:cdev->config is already NULL\n", __func__);
+		return;
+	}
+
 	list_for_each_entry(f, &cdev->config->functions, list) {
 		if (f->disable)
 			f->disable(f);
@@ -1120,8 +1147,14 @@ void usb_remove_config(struct usb_composite_dev *cdev,
 
 	spin_lock_irqsave(&cdev->lock, flags);
 
-	if (cdev->config == config)
+	if (cdev->config == config) {
+		if (cdev->gadget->is_chipidea && !cdev->suspended) {
+			spin_unlock_irqrestore(&cdev->lock, flags);
+			msm_do_bam_disable_enable(CI_CTRL);
+			spin_lock_irqsave(&cdev->lock, flags);
+		}
 		reset_config(cdev);
+	}
 
 	spin_unlock_irqrestore(&cdev->lock, flags);
 
@@ -1731,10 +1764,12 @@ composite_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *ctrl)
 				if (gadget->speed >= USB_SPEED_SUPER) {
 					cdev->desc.bcdUSB = cpu_to_le16(0x0310);
 					cdev->desc.bMaxPacketSize0 = 9;
-				} else if (!disable_l1_for_hs) {
+				} else if (gadget->l1_supported
+						&& !disable_l1_for_hs) {
 					cdev->desc.bcdUSB = cpu_to_le16(0x0210);
 				}
-			} else if (!disable_l1_for_hs) {
+			} else if (gadget->l1_supported
+						&& !disable_l1_for_hs) {
 				cdev->desc.bcdUSB = cpu_to_le16(0x0210);
 				DBG(cdev, "Config HS device with LPM(L1)\n");
 			}
@@ -1746,7 +1781,9 @@ composite_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *ctrl)
 			if (!gadget_is_dualspeed(gadget) ||
 			    gadget->speed >= USB_SPEED_SUPER)
 				break;
+			spin_lock(&cdev->lock);
 			device_qual(cdev);
+			spin_unlock(&cdev->lock);
 			value = min_t(int, w_length,
 				sizeof(struct usb_qualifier_descriptor));
 			break;
@@ -1756,7 +1793,9 @@ composite_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *ctrl)
 				break;
 			/* FALLTHROUGH */
 		case USB_DT_CONFIG:
+			spin_lock(&cdev->lock);
 			value = config_desc(cdev, w_value);
+			spin_unlock(&cdev->lock);
 			if (value >= 0)
 				value = min(w_length, (u16) value);
 			break;
@@ -1767,8 +1806,10 @@ composite_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *ctrl)
 				value = min(w_length, (u16) value);
 			break;
 		case USB_DT_BOS:
-			if (gadget_is_superspeed(gadget) ||
-				!disable_l1_for_hs) {
+			if ((gadget_is_superspeed(gadget) &&
+				(gadget->speed >= USB_SPEED_SUPER)) ||
+				(gadget->l1_supported
+					&& !disable_l1_for_hs)) {
 				value = bos_desc(cdev);
 				value = min(w_length, (u16) value);
 			}
@@ -2154,8 +2195,14 @@ void composite_disconnect(struct usb_gadget *gadget)
 	 * disconnect callbacks?
 	 */
 	spin_lock_irqsave(&cdev->lock, flags);
-	if (cdev->config)
+	if (cdev->config) {
+		if (gadget->is_chipidea && !cdev->suspended) {
+			spin_unlock_irqrestore(&cdev->lock, flags);
+			msm_do_bam_disable_enable(CI_CTRL);
+			spin_lock_irqsave(&cdev->lock, flags);
+		}
 		reset_config(cdev);
+	}
 	if (cdev->driver->disconnect)
 		cdev->driver->disconnect(cdev);
 	if (cdev->delayed_status != 0) {
@@ -2263,7 +2310,8 @@ int composite_dev_prepare(struct usb_composite_driver *composite,
 	if (!cdev->req)
 		return -ENOMEM;
 
-	cdev->req->buf = kmalloc(USB_COMP_EP0_BUFSIZ, GFP_KERNEL);
+	cdev->req->buf = kmalloc(USB_COMP_EP0_BUFSIZ +
+				(gadget->extra_buf_alloc), GFP_KERNEL);
 	if (!cdev->req->buf)
 		goto fail;
 
@@ -2447,22 +2495,24 @@ void composite_resume(struct usb_gadget *gadget)
 	spin_lock_irqsave(&cdev->lock, flags);
 	if (cdev->config) {
 		list_for_each_entry(f, &cdev->config->functions, list) {
-			ret = usb_func_wakeup_int(f);
-			if (ret) {
-				if (ret == -EAGAIN) {
-					ERROR(f->config->cdev,
-						"Function wakeup for %s could not complete due to suspend state.\n",
-						f->name ? f->name : "");
-					break;
-				} else if (ret != -ENOTSUPP) {
-					ERROR(f->config->cdev,
-						"Failed to wake function %s from suspend state. ret=%d. Canceling USB request.\n",
-						f->name ? f->name : "",
-						ret);
+			if (f->func_wakeup_pending) {
+				ret = usb_func_wakeup_int(f);
+				if (ret) {
+					if (ret == -EAGAIN) {
+						ERROR(f->config->cdev,
+							"Function wakeup for %s could not complete due to suspend state.\n",
+							f->name ? f->name : "");
+					} else if (ret != -ENOTSUPP) {
+						ERROR(f->config->cdev,
+							"Failed to wake function %s from suspend state. ret=%d. Canceling USB request.\n",
+							f->name ? f->name : "",
+							ret);
+					}
 				}
+				f->func_wakeup_pending = 0;
 			}
 
-			if (f->resume)
+			if (gadget->speed != USB_SPEED_SUPER && f->resume)
 				f->resume(f);
 		}
 

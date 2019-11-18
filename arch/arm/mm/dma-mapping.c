@@ -1024,9 +1024,10 @@ static void __arm_dma_free(struct device *dev, size_t size, void *cpu_addr,
 		.page = page,
 		.want_vaddr = ((attrs & DMA_ATTR_NO_KERNEL_MAPPING) == 0),
 	};
+	void *addr = (args.want_vaddr) ? cpu_addr : page;
 
-	buf = arm_dma_buffer_find(cpu_addr);
-	if (WARN(!buf, "Freeing invalid buffer %p\n", cpu_addr))
+	buf = arm_dma_buffer_find(addr);
+	if (WARN(!buf, "Freeing invalid buffer %pK\n", addr))
 		return;
 
 	buf->allocator->free(&args);
@@ -1964,6 +1965,8 @@ int arm_iommu_map_sg(struct device *dev, struct scatterlist *sg,
 		total_length += s->length;
 
 	iova = __alloc_iova(mapping, total_length);
+	if (iova == DMA_ERROR_CODE)
+		return 0;
 	ret = iommu_map_sg(mapping->domain, iova, sg, nents, prot);
 	if (ret != total_length) {
 		__free_iova(mapping, iova, total_length);
@@ -2343,15 +2346,11 @@ static int
 iommu_init_mapping(struct device *dev, struct dma_iommu_mapping *mapping)
 {
 	unsigned int bitmap_size = BITS_TO_LONGS(mapping->bits) * sizeof(long);
-	u64 size = mapping->bits << PAGE_SHIFT;
 	int extensions = 1;
 	int err = -ENOMEM;
 
 	if (!bitmap_size)
 		return -EINVAL;
-
-	WARN(!IS_ALIGNED(size, SZ_128M),
-			"size is not aligned to 128M, alignment enforced");
 
 	if (bitmap_size > PAGE_SIZE) {
 		extensions = bitmap_size / PAGE_SIZE;
@@ -2371,6 +2370,7 @@ iommu_init_mapping(struct device *dev, struct dma_iommu_mapping *mapping)
 
 	mapping->nr_bitmaps = 1;
 	mapping->extensions = extensions;
+	mapping->bits = BITS_PER_BYTE * bitmap_size;
 
 	spin_lock_init(&mapping->lock);
 	mapping->ops = &iommu_ops;
@@ -2481,7 +2481,10 @@ static int __arm_iommu_attach_device(struct device *dev,
 {
 	int err;
 
-	err = iommu_attach_device(mapping->domain, dev);
+	if (!dev->iommu_group)
+		return -EINVAL;
+
+	err = iommu_attach_group(mapping->domain, dev->iommu_group);
 	if (err)
 		return err;
 
@@ -2608,7 +2611,7 @@ static bool arm_setup_iommu_dma_ops(struct device *dev, u64 dma_base, u64 size,
 	}
 
 	if (__arm_iommu_attach_device(dev, mapping)) {
-		pr_warn("Failed to attached device %s to IOMMU_mapping\n",
+		pr_debug("Failed to attached device %s to IOMMU_mapping\n",
 				dev_name(dev));
 		arm_iommu_release_mapping(mapping);
 		return false;

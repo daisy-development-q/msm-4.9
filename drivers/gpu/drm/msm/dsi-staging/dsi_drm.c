@@ -63,6 +63,13 @@ static void convert_to_dsi_mode(const struct drm_display_mode *drm_mode,
 		dsi_mode->dsi_mode_flags |= DSI_MODE_FLAG_DMS;
 	if (msm_is_mode_seamless_vrr(drm_mode))
 		dsi_mode->dsi_mode_flags |= DSI_MODE_FLAG_VRR;
+	if (msm_is_mode_seamless_dyn_clk(drm_mode))
+		dsi_mode->dsi_mode_flags |= DSI_MODE_FLAG_DYN_CLK;
+
+	dsi_mode->timing.h_sync_polarity =
+			!!(drm_mode->flags & DRM_MODE_FLAG_PHSYNC);
+	dsi_mode->timing.v_sync_polarity =
+			!!(drm_mode->flags & DRM_MODE_FLAG_PVSYNC);
 }
 
 void dsi_convert_to_drm_mode(const struct dsi_display_mode *dsi_mode,
@@ -100,8 +107,18 @@ void dsi_convert_to_drm_mode(const struct dsi_display_mode *dsi_mode,
 		drm_mode->private_flags |= MSM_MODE_FLAG_SEAMLESS_DMS;
 	if (dsi_mode->dsi_mode_flags & DSI_MODE_FLAG_VRR)
 		drm_mode->private_flags |= MSM_MODE_FLAG_SEAMLESS_VRR;
+	if (dsi_mode->dsi_mode_flags & DSI_MODE_FLAG_DYN_CLK)
+		drm_mode->private_flags |= MSM_MODE_FLAG_SEAMLESS_DYN_CLK;
 
-	drm_mode_set_name(drm_mode);
+	if (dsi_mode->timing.h_sync_polarity)
+		drm_mode->flags |= DRM_MODE_FLAG_PHSYNC;
+	if (dsi_mode->timing.v_sync_polarity)
+		drm_mode->flags |= DRM_MODE_FLAG_PVSYNC;
+
+	/* set mode name */
+	snprintf(drm_mode->name, DRM_DISPLAY_MODE_LEN, "%dx%dx%dx%d",
+		 drm_mode->hdisplay, drm_mode->vdisplay, drm_mode->vrefresh,
+		 drm_mode->clock);
 }
 
 static int dsi_bridge_attach(struct drm_bridge *bridge)
@@ -146,7 +163,8 @@ static void dsi_bridge_pre_enable(struct drm_bridge *bridge)
 	}
 
 	if (c_bridge->dsi_mode.dsi_mode_flags &
-		(DSI_MODE_FLAG_SEAMLESS | DSI_MODE_FLAG_VRR)) {
+		(DSI_MODE_FLAG_SEAMLESS | DSI_MODE_FLAG_VRR |
+		 DSI_MODE_FLAG_DYN_CLK)) {
 		pr_debug("[%d] seamless pre-enable\n", c_bridge->id);
 		return;
 	}
@@ -269,6 +287,12 @@ static void dsi_bridge_mode_set(struct drm_bridge *bridge,
 
 	memset(&(c_bridge->dsi_mode), 0x0, sizeof(struct dsi_display_mode));
 	convert_to_dsi_mode(adjusted_mode, &(c_bridge->dsi_mode));
+
+	/* restore bit_clk_rate also for dynamic clk use cases */
+	c_bridge->dsi_mode.timing.clk_rate_hz =
+		dsi_drm_find_bit_clk_rate(c_bridge->display, adjusted_mode);
+
+	pr_debug("clk_rate: %llu\n", c_bridge->dsi_mode.timing.clk_rate_hz);
 }
 
 static bool dsi_bridge_mode_fixup(struct drm_bridge *bridge,
@@ -297,17 +321,23 @@ static bool dsi_bridge_mode_fixup(struct drm_bridge *bridge,
 
 	convert_to_dsi_mode(mode, &dsi_mode);
 
-	/*
-	 * retrieve dsi mode from dsi driver's cache since not safe to take
-	 * the drm mode config mutex in all paths
-	 */
-	rc = dsi_display_find_mode(display, &dsi_mode, &panel_dsi_mode);
-	if (rc)
-		return rc;
+	/* external bridge doesn't use priv_info and dsi_mode_flags */
+	if (!dsi_display_has_ext_bridge(display)) {
+		/*
+		 * retrieve dsi mode from dsi driver's cache since not safe to
+		 * take the drm mode config mutex in all paths
+		 */
+		rc = dsi_display_find_mode(display, &dsi_mode, &panel_dsi_mode);
+		if (rc)
+			return rc;
 
-	/* propagate the private info to the adjusted_mode derived dsi mode */
-	dsi_mode.priv_info = panel_dsi_mode->priv_info;
-	dsi_mode.dsi_mode_flags = panel_dsi_mode->dsi_mode_flags;
+		/*
+		 * propagate the private info to the adjusted_mode derived dsi
+		 * mode
+		 */
+		dsi_mode.priv_info = panel_dsi_mode->priv_info;
+		dsi_mode.dsi_mode_flags = panel_dsi_mode->dsi_mode_flags;
+	}
 
 	rc = dsi_display_validate_mode(c_bridge->display, &dsi_mode,
 			DSI_VALIDATE_FLAG_ALLOW_ADJUST);
@@ -321,17 +351,20 @@ static bool dsi_bridge_mode_fixup(struct drm_bridge *bridge,
 
 		convert_to_dsi_mode(&crtc_state->crtc->state->mode,
 							&cur_dsi_mode);
-		rc = dsi_display_validate_mode_vrr(c_bridge->display,
+		rc = dsi_display_validate_mode_change(c_bridge->display,
 					&cur_dsi_mode, &dsi_mode);
-		if (rc)
-			pr_debug("[%s] vrr mode mismatch failure rc=%d\n",
+		if (rc) {
+			pr_err("[%s] seamless mode mismatch failure rc=%d\n",
 				c_bridge->display->name, rc);
+			return false;
+		}
 
 		cur_mode = crtc_state->crtc->mode;
 
 		/* No DMS/VRR when drm pipeline is changing */
 		if (!drm_mode_equal(&cur_mode, adjusted_mode) &&
 			(!(dsi_mode.dsi_mode_flags & DSI_MODE_FLAG_VRR)) &&
+			(!(dsi_mode.dsi_mode_flags & DSI_MODE_FLAG_DYN_CLK)) &&
 			(!crtc_state->active_changed ||
 			 display->is_cont_splash_enabled))
 			dsi_mode.dsi_mode_flags |= DSI_MODE_FLAG_DMS;
@@ -341,6 +374,33 @@ static bool dsi_bridge_mode_fixup(struct drm_bridge *bridge,
 	dsi_convert_to_drm_mode(&dsi_mode, adjusted_mode);
 
 	return true;
+}
+
+u64 dsi_drm_find_bit_clk_rate(void *display,
+			      const struct drm_display_mode *drm_mode)
+{
+	int i = 0, count = 0;
+	struct dsi_display *dsi_display = display;
+	struct dsi_display_mode *dsi_mode;
+	u64 bit_clk_rate = 0;
+
+	if (!dsi_display || !drm_mode)
+		return 0;
+
+	dsi_display_get_mode_count(dsi_display, &count);
+
+	for (i = 0; i < count; i++) {
+		dsi_mode = &dsi_display->modes[i];
+		if ((dsi_mode->timing.v_active == drm_mode->vdisplay) &&
+		    (dsi_mode->timing.h_active == drm_mode->hdisplay) &&
+		    (dsi_mode->pixel_clk_khz == drm_mode->clock) &&
+		    (dsi_mode->timing.refresh_rate == drm_mode->vrefresh)) {
+			bit_clk_rate = dsi_mode->timing.clk_rate_hz;
+			break;
+		}
+	}
+
+	return bit_clk_rate;
 }
 
 int dsi_conn_get_mode_info(const struct drm_display_mode *drm_mode,
@@ -366,7 +426,7 @@ int dsi_conn_get_mode_info(const struct drm_display_mode *drm_mode,
 	mode_info->prefill_lines = dsi_mode.priv_info->panel_prefill_lines;
 	mode_info->jitter_numer = dsi_mode.priv_info->panel_jitter_numer;
 	mode_info->jitter_denom = dsi_mode.priv_info->panel_jitter_denom;
-	mode_info->clk_rate = dsi_mode.priv_info->clk_rate_hz;
+	mode_info->clk_rate = dsi_drm_find_bit_clk_rate(display, drm_mode);
 
 	memcpy(&mode_info->topology, &dsi_mode.priv_info->topology,
 			sizeof(struct msm_display_topology));
@@ -382,6 +442,35 @@ int dsi_conn_get_mode_info(const struct drm_display_mode *drm_mode,
 		memcpy(&mode_info->roi_caps, &dsi_mode.priv_info->roi_caps,
 			sizeof(dsi_mode.priv_info->roi_caps));
 	}
+
+	return 0;
+}
+
+int dsi_conn_ext_bridge_get_mode_info(const struct drm_display_mode *drm_mode,
+	struct msm_mode_info *mode_info,
+	u32 max_mixer_width, void *display)
+{
+	struct msm_display_topology *topology;
+	struct dsi_display_mode dsi_mode;
+	struct dsi_mode_info *timing;
+
+	if (!drm_mode || !mode_info)
+		return -EINVAL;
+
+	convert_to_dsi_mode(drm_mode, &dsi_mode);
+
+	memset(mode_info, 0, sizeof(*mode_info));
+
+	timing = &dsi_mode.timing;
+	mode_info->frame_rate = dsi_mode.timing.refresh_rate;
+	mode_info->vtotal = DSI_V_TOTAL(timing);
+
+	topology = &mode_info->topology;
+	topology->num_lm = (max_mixer_width <= drm_mode->hdisplay) ? 2 : 1;
+	topology->num_enc = 0;
+	topology->num_intf = topology->num_lm;
+
+	mode_info->comp_info.comp_type = MSM_DISPLAY_COMPRESSION_NONE;
 
 	return 0;
 }
@@ -461,6 +550,9 @@ int dsi_conn_set_info_blob(struct drm_connector *connector,
 		sde_kms_info_add_keyint(info, "max_fps",
 			panel->dfps_caps.max_refresh_rate);
 	}
+
+	sde_kms_info_add_keystr(info, "dyn bitclk support",
+			panel->dyn_clk_caps.dyn_clk_support ? "true" : "false");
 
 	switch (panel->phy_props.rotation) {
 	case DSI_PANEL_ROTATE_NONE:
@@ -557,14 +649,20 @@ void dsi_connector_put_modes(struct drm_connector *connector,
 {
 	struct drm_display_mode *drm_mode;
 	struct dsi_display_mode dsi_mode;
+	struct dsi_display *dsi_display;
 
 	if (!connector || !display)
 		return;
 
-	 list_for_each_entry(drm_mode, &connector->modes, head) {
+	list_for_each_entry(drm_mode, &connector->modes, head) {
 		convert_to_dsi_mode(drm_mode, &dsi_mode);
 		dsi_display_put_mode(display, &dsi_mode);
 	}
+
+	/* free the display structure modes also */
+	dsi_display = display;
+	kfree(dsi_display->modes);
+	dsi_display->modes = NULL;
 }
 
 int dsi_connector_get_modes(struct drm_connector *connector,
@@ -611,6 +709,9 @@ int dsi_connector_get_modes(struct drm_connector *connector,
 		}
 		m->width_mm = connector->display_info.width_mm;
 		m->height_mm = connector->display_info.height_mm;
+		/* set the first mode in list as preferred */
+		if (i == 0)
+			m->type |= DRM_MODE_TYPE_PREFERRED;
 		drm_mode_probed_add(connector, m);
 	}
 end:
@@ -716,6 +817,9 @@ int dsi_conn_post_kickoff(struct drm_connector *connector)
 
 		c_bridge->dsi_mode.dsi_mode_flags &= ~DSI_MODE_FLAG_VRR;
 	}
+
+	/* ensure dynamic clk switch flag is reset */
+	c_bridge->dsi_mode.dsi_mode_flags &= ~DSI_MODE_FLAG_DYN_CLK;
 
 	return 0;
 }

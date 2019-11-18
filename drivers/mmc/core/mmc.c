@@ -685,9 +685,6 @@ static int mmc_decode_ext_csd(struct mmc_card *card, u8 *ext_csd)
 				mmc_hostname(card->host),
 				card->ext_csd.barrier_support,
 				card->ext_csd.cache_flush_policy);
-		card->ext_csd.enhanced_rpmb_supported =
-			(card->ext_csd.rel_param &
-			 EXT_CSD_WR_REL_PARAM_EN_RPMB_REL_WR);
 	} else {
 		card->ext_csd.cmdq_support = 0;
 		card->ext_csd.cmdq_depth = 0;
@@ -709,6 +706,13 @@ static int mmc_decode_ext_csd(struct mmc_card *card, u8 *ext_csd)
 		card->ext_csd.device_life_time_est_typ_b =
 			ext_csd[EXT_CSD_DEVICE_LIFE_TIME_EST_TYP_B];
 	}
+
+	/* eMMC v5.1 or later */
+	if (card->ext_csd.rev >= 8)
+		card->ext_csd.enhanced_rpmb_supported =
+			(card->ext_csd.rel_param &
+			 EXT_CSD_WR_REL_PARAM_EN_RPMB_REL_WR);
+
 out:
 	return err;
 }
@@ -3004,12 +3008,6 @@ static int mmc_reset(struct mmc_host *host)
 	struct mmc_card *card = host->card;
 	int ret;
 
-	/*
-	 * In the case of recovery, we can't expect flushing the cache to work
-	 * always, but we have a go and ignore errors.
-	 */
-	mmc_flush_cache(host->card);
-
 	if ((host->caps & MMC_CAP_HW_RESET) && host->ops->hw_reset &&
 	     mmc_can_reset(card)) {
 		mmc_host_clk_hold(host);
@@ -3064,6 +3062,73 @@ static int mmc_shutdown(struct mmc_host *host)
 	return 0;
 }
 
+static int mmc_pre_hibernate(struct mmc_host *host)
+{
+	int ret = 0;
+
+	mmc_get_card(host->card);
+	host->cached_caps2 = host->caps2;
+
+	/*
+	 * Increase usage_count of card and host device till
+	 * hibernation is over. This will ensure they will not runtime suspend.
+	 */
+	pm_runtime_get_noresume(mmc_dev(host));
+	pm_runtime_get_noresume(&host->card->dev);
+
+	if (!mmc_can_scale_clk(host))
+		goto out;
+	/*
+	 * Suspend clock scaling and mask host capability so that
+	 * we will run in max frequency during:
+	 *	1. Hibernation preparation and image creation
+	 *	2. After finding hibernation image during reboot
+	 *	3. Once hibernation image is loaded and till hibernation
+	 *	restore is complete.
+	 */
+	if (host->clk_scaling.enable)
+		mmc_suspend_clk_scaling(host);
+	host->caps2 &= ~MMC_CAP2_CLK_SCALE;
+	host->clk_scaling.state = MMC_LOAD_HIGH;
+	ret = mmc_clk_update_freq(host, host->card->clk_scaling_highest,
+				host->clk_scaling.state, 0);
+	if (ret)
+		pr_err("%s: %s: Setting clk frequency to max failed: %d\n",
+				mmc_hostname(host), __func__, ret);
+out:
+	mmc_host_clk_hold(host);
+	mmc_put_card(host->card);
+	return ret;
+}
+
+static int mmc_post_hibernate(struct mmc_host *host)
+{
+	int ret = 0;
+
+	mmc_get_card(host->card);
+	if (!(host->cached_caps2 & MMC_CAP2_CLK_SCALE))
+		goto enable_pm;
+	/* Enable the clock scaling and set the host capability */
+	host->caps2 |= MMC_CAP2_CLK_SCALE;
+	if (!host->clk_scaling.enable)
+		ret = mmc_resume_clk_scaling(host);
+	if (ret)
+		pr_err("%s: %s: Resuming clk scaling failed: %d\n",
+				mmc_hostname(host), __func__, ret);
+enable_pm:
+	/*
+	 * Reduce usage count of card and host device so that they may
+	 * runtime suspend.
+	 */
+	pm_runtime_put_noidle(&host->card->dev);
+	pm_runtime_put_noidle(mmc_dev(host));
+
+	mmc_host_clk_release(host);
+
+	mmc_put_card(host->card);
+	return ret;
+}
+
 static const struct mmc_bus_ops mmc_ops = {
 	.remove = mmc_remove,
 	.detect = mmc_detect,
@@ -3075,6 +3140,8 @@ static const struct mmc_bus_ops mmc_ops = {
 	.change_bus_speed = mmc_change_bus_speed,
 	.reset = mmc_reset,
 	.shutdown = mmc_shutdown,
+	.pre_hibernate = mmc_pre_hibernate,
+	.post_hibernate = mmc_post_hibernate
 };
 
 /*

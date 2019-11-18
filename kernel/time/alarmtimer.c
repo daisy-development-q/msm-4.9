@@ -348,6 +348,10 @@ void alarm_init(struct alarm *alarm, enum alarmtimer_type type,
 	alarm->timer.function = alarmtimer_fired;
 	alarm->function = function;
 	alarm->type = type;
+	if (type >= ALARM_NUMTYPE) {
+		/* use ALARM_BOOTTIME as the default */
+		alarm->type = ALARM_BOOTTIME;
+	}
 	alarm->state = ALARMTIMER_STATE_INACTIVE;
 }
 EXPORT_SYMBOL_GPL(alarm_init);
@@ -569,7 +573,7 @@ static int alarm_timer_create(struct k_itimer *new_timer)
 	enum  alarmtimer_type type;
 
 	if (!alarmtimer_get_rtcdev())
-		return -ENOTSUPP;
+		return -EOPNOTSUPP;
 
 	if (!capable(CAP_WAKE_ALARM))
 		return -EPERM;
@@ -797,7 +801,7 @@ static int alarm_timer_nsleep(const clockid_t which_clock, int flags,
 	struct restart_block *restart;
 
 	if (!alarmtimer_get_rtcdev())
-		return -ENOTSUPP;
+		return -EOPNOTSUPP;
 
 	if (flags & ~TIMER_ABSTIME)
 		return -EINVAL;

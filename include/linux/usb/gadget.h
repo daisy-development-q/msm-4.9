@@ -81,12 +81,22 @@ enum gsi_ep_op {
  * @buf_len: Size of each individual buffer is determined based on aggregation
  *	negotiated as per the protocol. In case of no aggregation supported by
  *	the protocol, we use default values.
+ * @db_reg_phs_addr_lsb: IPA channel doorbell register's physical address LSB
+ * @mapped_db_reg_phs_addr_lsb: doorbell LSB IOVA address mapped with IOMMU
+ * @db_reg_phs_addr_msb: IPA channel doorbell register's physical address MSB
+ * @sgt_trb_xfer_ring: USB TRB ring related sgtable entries
+ * @sgt_data_buff: Data buffer related sgtable entries
  */
 struct usb_gsi_request {
 	void *buf_base_addr;
 	dma_addr_t dma;
 	size_t num_bufs;
 	size_t buf_len;
+	u32 db_reg_phs_addr_lsb;
+	dma_addr_t mapped_db_reg_phs_addr_lsb;
+	u32 db_reg_phs_addr_msb;
+	struct sg_table sgt_trb_xfer_ring;
+	struct sg_table sgt_data_buff;
 };
 
 /*
@@ -137,6 +147,7 @@ struct gsi_channel_info {
  *     by adding a zero length packet as needed;
  * @short_not_ok: When reading data, makes short packets be
  *     treated as errors (queue stops advancing till cleanup).
+ * @dma_mapped: Indicates if request has been mapped to DMA (internal)
  * @complete: Function called when request completes, so this request and
  *	its buffer may be re-used.  The function will always be called with
  *	interrupts disabled, and it must not sleep.
@@ -193,6 +204,7 @@ struct usb_request {
 	unsigned		no_interrupt:1;
 	unsigned		zero:1;
 	unsigned		short_not_ok:1;
+	unsigned		dma_mapped:1;
 
 	void			(*complete)(struct usb_ep *ep,
 					struct usb_request *req);
@@ -468,6 +480,10 @@ struct usb_gadget_ops {
  * @deactivated: True if gadget is deactivated - in deactivated state it cannot
  *	be connected.
  * @connected: True if gadget is connected.
+ * @bam2bam_func_enabled; Indicates function using bam2bam is enabled or not.
+ * @extra_buf_alloc: Extra allocation size for AXI prefetch so that out of
+ * boundary access is protected.
+ * @is_chipidea: True if ChipIdea device controller
  *
  * Gadgets have a mostly-portable "gadget driver" implementing device
  * functions, handling all usb configurations and interfaces.  Gadget
@@ -521,6 +537,11 @@ struct usb_gadget {
 	unsigned			deactivated:1;
 	unsigned			connected:1;
 	bool				remote_wakeup;
+	bool				bam2bam_func_enabled;
+	u32				extra_buf_alloc;
+	bool				l1_supported;
+	bool				is_chipidea;
+	bool				self_powered;
 };
 #define work_to_gadget(w)	(container_of((w), struct usb_gadget, work))
 
@@ -1117,7 +1138,7 @@ extern struct usb_ep *usb_ep_autoconfig_by_name(struct usb_gadget *gadget,
 			const char *ep_name);
 
 #ifdef CONFIG_USB_DWC3_MSM
-int msm_ep_config(struct usb_ep *ep);
+int msm_ep_config(struct usb_ep *ep, struct usb_request *request);
 int msm_ep_unconfig(struct usb_ep *ep);
 void dwc3_tx_fifo_resize_request(struct usb_ep *ep, bool qdss_enable);
 int msm_data_fifo_config(struct usb_ep *ep, unsigned long addr, u32 size,
@@ -1129,7 +1150,7 @@ static inline int msm_data_fifo_config(struct usb_ep *ep, unsigned long addr,
 	u32 size, u8 dst_pipe_idx)
 {	return -ENODEV; }
 
-static inline int msm_ep_config(struct usb_ep *ep)
+static inline int msm_ep_config(struct usb_ep *ep, struct usb_request *request)
 { return -ENODEV; }
 
 static inline int msm_ep_unconfig(struct usb_ep *ep)

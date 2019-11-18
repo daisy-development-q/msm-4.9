@@ -288,8 +288,10 @@ static int do_read_inode(struct inode *inode)
 	inode->i_ctime.tv_nsec = le32_to_cpu(ri->i_ctime_nsec);
 	inode->i_mtime.tv_nsec = le32_to_cpu(ri->i_mtime_nsec);
 	inode->i_generation = le32_to_cpu(ri->i_generation);
-
-	fi->i_current_depth = le32_to_cpu(ri->i_current_depth);
+	if (S_ISDIR(inode->i_mode))
+		fi->i_current_depth = le32_to_cpu(ri->i_current_depth);
+	else if (S_ISREG(inode->i_mode))
+		fi->i_gc_failures = le16_to_cpu(ri->i_gc_failures);
 	fi->i_xattr_nid = le32_to_cpu(ri->i_xattr_nid);
 	fi->i_flags = le32_to_cpu(ri->i_flags);
 	fi->flags = 0;
@@ -360,6 +362,10 @@ static int do_read_inode(struct inode *inode)
 		fi->i_crtime.tv_nsec = le32_to_cpu(ri->i_crtime_nsec);
 	}
 
+	F2FS_I(inode)->i_disk_time[0] = inode->i_atime;
+	F2FS_I(inode)->i_disk_time[1] = inode->i_ctime;
+	F2FS_I(inode)->i_disk_time[2] = inode->i_mtime;
+	F2FS_I(inode)->i_disk_time[3] = F2FS_I(inode)->i_crtime;
 	f2fs_put_page(node_page, 1);
 
 	stat_inc_inline_xattr(inode);
@@ -404,7 +410,7 @@ make_now:
 		inode->i_op = &f2fs_dir_inode_operations;
 		inode->i_fop = &f2fs_dir_operations;
 		inode->i_mapping->a_ops = &f2fs_dblock_aops;
-		mapping_set_gfp_mask(inode->i_mapping, GFP_F2FS_HIGH_ZERO);
+		inode_nohighmem(inode);
 	} else if (S_ISLNK(inode->i_mode)) {
 		if (f2fs_encrypted_inode(inode))
 			inode->i_op = &f2fs_encrypted_symlink_inode_operations;
@@ -426,6 +432,7 @@ make_now:
 	return inode;
 
 bad_inode:
+	f2fs_inode_synced(inode);
 	iget_failed(inode);
 	trace_f2fs_iget_exit(inode, ret);
 	return ERR_PTR(ret);
@@ -480,7 +487,11 @@ void update_inode(struct inode *inode, struct page *node_page)
 	ri->i_atime_nsec = cpu_to_le32(inode->i_atime.tv_nsec);
 	ri->i_ctime_nsec = cpu_to_le32(inode->i_ctime.tv_nsec);
 	ri->i_mtime_nsec = cpu_to_le32(inode->i_mtime.tv_nsec);
-	ri->i_current_depth = cpu_to_le32(F2FS_I(inode)->i_current_depth);
+	if (S_ISDIR(inode->i_mode))
+		ri->i_current_depth =
+			cpu_to_le32(F2FS_I(inode)->i_current_depth);
+	else if (S_ISREG(inode->i_mode))
+		ri->i_gc_failures = cpu_to_le16(F2FS_I(inode)->i_gc_failures);
 	ri->i_xattr_nid = cpu_to_le32(F2FS_I(inode)->i_xattr_nid);
 	ri->i_flags = cpu_to_le32(F2FS_I(inode)->i_flags);
 	ri->i_pino = cpu_to_le32(F2FS_I(inode)->i_pino);
@@ -515,12 +526,15 @@ void update_inode(struct inode *inode, struct page *node_page)
 	}
 
 	__set_inode_rdev(inode, ri);
-	set_cold_node(inode, node_page);
 
 	/* deleted inode */
 	if (inode->i_nlink == 0)
 		clear_inline_node(node_page);
 
+	F2FS_I(inode)->i_disk_time[0] = inode->i_atime;
+	F2FS_I(inode)->i_disk_time[1] = inode->i_ctime;
+	F2FS_I(inode)->i_disk_time[2] = inode->i_mtime;
+	F2FS_I(inode)->i_disk_time[3] = F2FS_I(inode)->i_crtime;
 }
 
 void update_inode_page(struct inode *inode)
@@ -661,7 +675,7 @@ no_delete:
 			!exist_written_data(sbi, inode->i_ino, ORPHAN_INO));
 	}
 out_clear:
-	fscrypt_put_encryption_info(inode, NULL);
+	fscrypt_put_encryption_info(inode);
 	clear_inode(inode);
 }
 

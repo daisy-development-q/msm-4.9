@@ -252,7 +252,14 @@ struct sde_connector_ops {
 	int (*config_hdr)(void *display,
 		struct sde_connector_state *c_state);
 
-	/*
+	/**
+	 * cont_splash_config - initialize splash resources
+	 * @display: Pointer to private display handle
+	 * Returns: zero for success, negetive for failure
+	 */
+	int (*cont_splash_config)(void *display);
+
+	/**
 	 * get_panel_vfp - returns original panel vfp
 	 * @display: Pointer to private display handle
 	 * @h_active: width
@@ -316,12 +323,15 @@ struct sde_connector_evt {
  * @bl_device: backlight device node
  * @status_work: work object to perform status checks
  * @force_panel_dead: variable to trigger forced ESD recovery
+ * @esd_status_interval: variable to change ESD check interval in millisec
  * @panel_dead: Flag to indicate if panel has gone bad
  * @esd_status_check: Flag to indicate if ESD thread is scheduled or not
  * @bl_scale_dirty: Flag to indicate PP BL scale value(s) is changed
  * @bl_scale: BL scale value for ABA feature
  * @bl_scale_ad: BL scale value for AD feature
- * last_cmd_tx_sts: status of the last command transfer
+ * @unset_bl_level: BL level that needs to be set later
+ * @allow_bl_update: Flag to indicate if BL update is allowed currently or not
+ * @last_cmd_tx_sts: status of the last command transfer
  */
 struct sde_connector {
 	struct drm_connector base;
@@ -358,12 +368,15 @@ struct sde_connector {
 	struct backlight_device *bl_device;
 	struct delayed_work status_work;
 	u32 force_panel_dead;
+	u32 esd_status_interval;
 	bool panel_dead;
 	bool esd_status_check;
 
 	bool bl_scale_dirty;
 	u32 bl_scale;
 	u32 bl_scale_ad;
+	u32 unset_bl_level;
+	bool allow_bl_update;
 
 	bool last_cmd_tx_sts;
 };
@@ -576,8 +589,10 @@ void sde_connector_prepare_fence(struct drm_connector *connector);
  * sde_connector_complete_commit - signal completion of current commit
  * @connector: Pointer to drm connector object
  * @ts: timestamp to be updated in the fence signalling
+ * @fence_event: enum value to indicate nature of fence event
  */
-void sde_connector_complete_commit(struct drm_connector *connector, ktime_t ts);
+void sde_connector_complete_commit(struct drm_connector *connector,
+		ktime_t ts, enum sde_fence_event fence_event);
 
 /**
  * sde_connector_commit_reset - reset the completion signal

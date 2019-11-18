@@ -1,4 +1,4 @@
-/* Copyright (c) 2002,2007-2017, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2002,2007-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -120,13 +120,60 @@ static void adreno_ringbuffer_wptr(struct adreno_device *adreno_dev,
 
 }
 
+static void adreno_profile_submit_time(struct adreno_submit_time *time)
+{
+	struct kgsl_drawobj *drawobj;
+	struct kgsl_drawobj_cmd *cmdobj;
+	struct kgsl_mem_entry *entry;
+
+	if (time == NULL)
+		return;
+
+	drawobj = time->drawobj;
+
+	if (drawobj == NULL)
+		return;
+
+	cmdobj = CMDOBJ(drawobj);
+	entry = cmdobj->profiling_buf_entry;
+
+	if (entry) {
+		struct kgsl_drawobj_profiling_buffer *profile_buffer;
+
+		profile_buffer = kgsl_gpuaddr_to_vaddr(&entry->memdesc,
+					cmdobj->profiling_buffer_gpuaddr);
+
+		if (profile_buffer == NULL)
+			return;
+
+		/* Return kernel clock time to the the client if requested */
+		if (drawobj->flags & KGSL_DRAWOBJ_PROFILING_KTIME) {
+			uint64_t secs = time->ktime;
+
+			profile_buffer->wall_clock_ns =
+				do_div(secs, NSEC_PER_SEC);
+			profile_buffer->wall_clock_s = secs;
+		} else {
+			profile_buffer->wall_clock_s = time->utime.tv_sec;
+			profile_buffer->wall_clock_ns = time->utime.tv_nsec;
+		}
+
+		profile_buffer->gpu_ticks_queued = time->ticks;
+
+		kgsl_memdesc_unmap(&entry->memdesc);
+	}
+}
+
 void adreno_ringbuffer_submit(struct adreno_ringbuffer *rb,
 		struct adreno_submit_time *time)
 {
 	struct adreno_device *adreno_dev = ADRENO_RB_DEVICE(rb);
 
-	if (time != NULL)
+	if (time != NULL) {
 		adreno_get_submit_time(adreno_dev, rb, time);
+		/* Put the timevalues in the profiling buffer */
+		adreno_profile_submit_time(time);
+	}
 
 	adreno_ringbuffer_wptr(adreno_dev, rb);
 }
@@ -252,6 +299,11 @@ static int _adreno_ringbuffer_probe(struct adreno_device *adreno_dev,
 		PAGE_SIZE, 0, KGSL_MEMDESC_PRIVILEGED, "pagetable_desc");
 	if (ret)
 		return ret;
+
+	/* allocate a chunk of memory to create user profiling IB1s */
+	kgsl_allocate_global(KGSL_DEVICE(adreno_dev), &rb->profile_desc,
+		PAGE_SIZE, KGSL_MEMFLAGS_GPUREADONLY, 0, "profile_desc");
+
 	return kgsl_allocate_global(KGSL_DEVICE(adreno_dev), &rb->buffer_desc,
 			KGSL_RB_SIZE, KGSL_MEMFLAGS_GPUREADONLY,
 			0, "ringbuffer");
@@ -261,11 +313,12 @@ int adreno_ringbuffer_probe(struct adreno_device *adreno_dev, bool nopreempt)
 {
 	struct kgsl_device *device = KGSL_DEVICE(adreno_dev);
 	struct adreno_gpudev *gpudev = ADRENO_GPU_DEVICE(adreno_dev);
-	int i, status;
+	int i;
+	int status = -ENOMEM;
 
 	if (!adreno_is_a3xx(adreno_dev)) {
 		status = kgsl_allocate_global(device, &device->scratch,
-				PAGE_SIZE, 0, 0, "scratch");
+				PAGE_SIZE, 0, KGSL_MEMDESC_RANDOM, "scratch");
 		if (status != 0)
 			return status;
 	}
@@ -296,7 +349,7 @@ static void _adreno_ringbuffer_close(struct adreno_device *adreno_dev,
 
 	kgsl_free_global(device, &rb->pagetable_desc);
 	kgsl_free_global(device, &rb->preemption_desc);
-
+	kgsl_free_global(device, &rb->profile_desc);
 	kgsl_free_global(device, &rb->buffer_desc);
 	kgsl_del_event_group(&rb->events);
 	memset(rb, 0, sizeof(struct adreno_ringbuffer));
@@ -714,10 +767,14 @@ adreno_ringbuffer_issue_internal_cmds(struct adreno_ringbuffer *rb,
 		sizedwords, 0, NULL);
 }
 
+
+
 static void adreno_ringbuffer_set_constraint(struct kgsl_device *device,
 			struct kgsl_drawobj *drawobj)
 {
 	struct kgsl_context *context = drawobj->context;
+	unsigned long flags = drawobj->flags;
+
 	/*
 	 * Check if the context has a constraint and constraint flags are
 	 * set.
@@ -727,6 +784,37 @@ static void adreno_ringbuffer_set_constraint(struct kgsl_device *device,
 			(drawobj->flags & KGSL_CONTEXT_PWR_CONSTRAINT)))
 		kgsl_pwrctrl_set_constraint(device, &context->pwr_constraint,
 						context->id);
+
+	if (context->l3_pwr_constraint.type &&
+			((context->flags & KGSL_CONTEXT_PWR_CONSTRAINT) ||
+				(flags & KGSL_CONTEXT_PWR_CONSTRAINT))) {
+
+		if (IS_ERR_OR_NULL(device->l3_clk)) {
+			KGSL_DEV_ERR_ONCE(device, "Cannot set L3 constraint\n");
+			return;
+		}
+
+		switch (context->l3_pwr_constraint.type) {
+
+		case KGSL_CONSTRAINT_L3_PWRLEVEL: {
+			unsigned int sub_type;
+
+			sub_type = context->l3_pwr_constraint.sub_type;
+
+			if (sub_type == KGSL_CONSTRAINT_L3_PWR_MED)
+				clk_set_rate(device->l3_clk,
+						device->l3_freq[1]);
+
+			if (sub_type == KGSL_CONSTRAINT_L3_PWR_MAX)
+				clk_set_rate(device->l3_clk,
+						device->l3_freq[2]);
+			}
+			break;
+		case KGSL_CONSTRAINT_L3_NONE:
+			clk_set_rate(device->l3_clk, device->l3_freq[0]);
+			break;
+		}
+	}
 }
 
 static inline int _get_alwayson_counter(struct adreno_device *adreno_dev,
@@ -754,6 +842,37 @@ static inline int _get_alwayson_counter(struct adreno_device *adreno_dev,
 	return (unsigned int)(p - cmds);
 }
 
+/* This is the maximum possible size for 64 bit targets */
+#define PROFILE_IB_DWORDS 4
+#define PROFILE_IB_SLOTS (PAGE_SIZE / (PROFILE_IB_DWORDS << 2))
+
+static int set_user_profiling(struct adreno_device *adreno_dev,
+		struct adreno_ringbuffer *rb, u32 *cmds, u64 gpuaddr)
+{
+	int dwords, index = 0;
+	u64 ib_gpuaddr;
+	u32 *ib;
+
+	if (!rb->profile_desc.hostptr)
+		return 0;
+
+	ib = ((u32 *) rb->profile_desc.hostptr) +
+		(rb->profile_index * PROFILE_IB_DWORDS);
+	ib_gpuaddr = rb->profile_desc.gpuaddr +
+		(rb->profile_index * (PROFILE_IB_DWORDS << 2));
+
+	dwords = _get_alwayson_counter(adreno_dev, ib, gpuaddr);
+
+	/* Make an indirect buffer for the request */
+	cmds[index++] = cp_mem_packet(adreno_dev, CP_INDIRECT_BUFFER_PFE, 2, 1);
+	index += cp_gpuaddr(adreno_dev, &cmds[index], ib_gpuaddr);
+	cmds[index++] = dwords;
+
+	rb->profile_index = (rb->profile_index + 1) % PROFILE_IB_SLOTS;
+
+	return index;
+}
+
 /* adreno_rindbuffer_submitcmd - submit userspace IBs to the GPU */
 int adreno_ringbuffer_submitcmd(struct adreno_device *adreno_dev,
 		struct kgsl_drawobj_cmd *cmdobj,
@@ -774,16 +893,12 @@ int adreno_ringbuffer_submitcmd(struct adreno_device *adreno_dev,
 	int flags = KGSL_CMD_FLAGS_NONE;
 	int ret;
 	struct adreno_ringbuffer *rb;
-	struct kgsl_drawobj_profiling_buffer *profile_buffer = NULL;
 	unsigned int dwords = 0;
 	struct adreno_submit_time local;
-	struct kgsl_mem_entry *entry = cmdobj->profiling_buf_entry;
 	struct adreno_firmware *fw = ADRENO_FW(adreno_dev, ADRENO_FW_SQE);
 	bool set_ib1list_marker = false;
 
-	if (entry)
-		profile_buffer = kgsl_gpuaddr_to_vaddr(&entry->memdesc,
-					cmdobj->profiling_buffer_gpuaddr);
+	memset(&local, 0x0, sizeof(local));
 
 	context = drawobj->context;
 	drawctxt = ADRENO_CONTEXT(context);
@@ -855,16 +970,15 @@ int adreno_ringbuffer_submitcmd(struct adreno_device *adreno_dev,
 	dwords += (numibs * 30);
 
 	if (drawobj->flags & KGSL_DRAWOBJ_PROFILING &&
-		!adreno_is_a3xx(adreno_dev) && profile_buffer) {
+		!adreno_is_a3xx(adreno_dev) &&
+		(cmdobj->profiling_buf_entry != NULL)) {
 		user_profiling = true;
-		dwords += 6;
 
 		/*
-		 * REG_TO_MEM packet on A5xx and above needs another ordinal.
-		 * Add 2 more dwords since we do profiling before and after.
+		 * User side profiling uses two IB1s, one before with 4 dwords
+		 * per INDIRECT_BUFFER_PFE call
 		 */
-		if (!ADRENO_LEGACY_PM4(adreno_dev))
-			dwords += 2;
+		dwords += 8;
 
 		/*
 		 * we want to use an adreno_submit_time struct to get the
@@ -875,6 +989,8 @@ int adreno_ringbuffer_submitcmd(struct adreno_device *adreno_dev,
 
 		if (time == NULL)
 			time = &local;
+
+		time->drawobj = drawobj;
 	}
 
 	if (test_bit(CMDOBJ_PROFILE, &cmdobj->priv)) {
@@ -921,11 +1037,11 @@ int adreno_ringbuffer_submitcmd(struct adreno_device *adreno_dev,
 	}
 
 	/*
-	 * Add cmds to read the GPU ticks at the start of command obj and
+	 * Add IB1 to read the GPU ticks at the start of command obj and
 	 * write it into the appropriate command obj profiling buffer offset
 	 */
 	if (user_profiling) {
-		cmds += _get_alwayson_counter(adreno_dev, cmds,
+		cmds += set_user_profiling(adreno_dev, rb, cmds,
 			cmdobj->profiling_buffer_gpuaddr +
 			offsetof(struct kgsl_drawobj_profiling_buffer,
 			gpu_ticks_submitted));
@@ -973,11 +1089,11 @@ int adreno_ringbuffer_submitcmd(struct adreno_device *adreno_dev,
 	}
 
 	/*
-	 * Add cmds to read the GPU ticks at the end of command obj and
+	 * Add IB1 to read the GPU ticks at the end of command obj and
 	 * write it into the appropriate command obj profiling buffer offset
 	 */
 	if (user_profiling) {
-		cmds += _get_alwayson_counter(adreno_dev, cmds,
+		cmds += set_user_profiling(adreno_dev, rb, cmds,
 			cmdobj->profiling_buffer_gpuaddr +
 			offsetof(struct kgsl_drawobj_profiling_buffer,
 			gpu_ticks_retired));
@@ -1027,35 +1143,9 @@ int adreno_ringbuffer_submitcmd(struct adreno_device *adreno_dev,
 	if (!ret) {
 		set_bit(KGSL_CONTEXT_PRIV_SUBMITTED, &context->priv);
 		cmdobj->global_ts = drawctxt->internal_timestamp;
-
-		/* Put the timevalues in the profiling buffer */
-		if (user_profiling) {
-			/*
-			 * Return kernel clock time to the the client
-			 * if requested
-			 */
-			if (drawobj->flags & KGSL_DRAWOBJ_PROFILING_KTIME) {
-				uint64_t secs = time->ktime;
-
-				profile_buffer->wall_clock_ns =
-					do_div(secs, NSEC_PER_SEC);
-				profile_buffer->wall_clock_s = secs;
-			} else {
-				profile_buffer->wall_clock_s =
-					time->utime.tv_sec;
-				profile_buffer->wall_clock_ns =
-					time->utime.tv_nsec;
-			}
-			profile_buffer->gpu_ticks_queued = time->ticks;
-		}
 	}
 
 done:
-	/* Corresponding unmap to the memdesc map of profile_buffer */
-	if (entry)
-		kgsl_memdesc_unmap(&entry->memdesc);
-
-
 	trace_kgsl_issueibcmds(device, context->id, numibs, drawobj->timestamp,
 			drawobj->flags, ret, drawctxt->type);
 

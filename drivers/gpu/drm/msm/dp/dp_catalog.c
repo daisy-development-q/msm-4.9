@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2017-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -54,17 +54,17 @@
 }
 
 static u8 const vm_pre_emphasis[4][4] = {
-	{0x00, 0x0B, 0x12, 0xFF},       /* pe0, 0 db */
-	{0x00, 0x0A, 0x12, 0xFF},       /* pe1, 3.5 db */
-	{0x00, 0x0C, 0xFF, 0xFF},       /* pe2, 6.0 db */
+	{0x00, 0x0B, 0x14, 0xFF},       /* pe0, 0 db */
+	{0x00, 0x0B, 0x12, 0xFF},       /* pe1, 3.5 db */
+	{0x00, 0x0B, 0xFF, 0xFF},       /* pe2, 6.0 db */
 	{0xFF, 0xFF, 0xFF, 0xFF}        /* pe3, 9.5 db */
 };
 
 /* voltage swing, 0.2v and 1.0v are not support */
 static u8 const vm_voltage_swing[4][4] = {
-	{0x07, 0x0F, 0x14, 0xFF}, /* sw0, 0.4v  */
-	{0x11, 0x1D, 0x1F, 0xFF}, /* sw1, 0.6 v */
-	{0x18, 0x1F, 0xFF, 0xFF}, /* sw1, 0.8 v */
+	{0x07, 0x0F, 0x16, 0xFF}, /* sw0, 0.4v  */
+	{0x11, 0x1E, 0x1F, 0xFF}, /* sw1, 0.6 v */
+	{0x19, 0x1F, 0xFF, 0xFF}, /* sw1, 0.8 v */
 	{0xFF, 0xFF, 0xFF, 0xFF}  /* sw1, 1.2 v, optional */
 };
 
@@ -772,8 +772,6 @@ static void dp_catalog_ctrl_config_misc(struct dp_catalog_ctrl *ctrl,
 	catalog = dp_catalog_get_priv(ctrl);
 	io_data = catalog->io.dp_link;
 
-	misc_val = dp_read(catalog, io_data, DP_MISC1_MISC0);
-	misc_val |= cc;
 	misc_val |= (tb << 5);
 	misc_val |= BIT(0); /* Configure clock to synchronous mode */
 
@@ -782,12 +780,10 @@ static void dp_catalog_ctrl_config_misc(struct dp_catalog_ctrl *ctrl,
 }
 
 static void dp_catalog_ctrl_config_msa(struct dp_catalog_ctrl *ctrl,
-					u32 rate, u32 stream_rate_khz,
-					bool fixed_nvid)
+					u32 rate, u32 stream_rate_khz)
 {
 	u32 pixel_m, pixel_n;
 	u32 mvid, nvid;
-	u64 mvid_calc;
 	u32 const nvid_fixed = 0x8000;
 	u32 const link_rate_hbr2 = 540000;
 	u32 const link_rate_hbr3 = 810000;
@@ -800,43 +796,30 @@ static void dp_catalog_ctrl_config_msa(struct dp_catalog_ctrl *ctrl,
 	}
 
 	catalog = dp_catalog_get_priv(ctrl);
-	if (fixed_nvid) {
-		pr_debug("use fixed NVID=0x%x\n", nvid_fixed);
-		nvid = nvid_fixed;
+	io_data = catalog->io.dp_mmss_cc;
 
-		pr_debug("link rate=%dkbps, stream_rate_khz=%uKhz",
-			rate, stream_rate_khz);
+	pixel_m = dp_read(catalog, io_data, MMSS_DP_PIXEL_M);
+	pixel_n = dp_read(catalog, io_data, MMSS_DP_PIXEL_N);
+	pr_debug("pixel_m=0x%x, pixel_n=0x%x\n", pixel_m, pixel_n);
 
-		/*
-		 * For intermediate results, use 64 bit arithmetic to avoid
-		 * loss of precision.
-		 */
-		mvid_calc = (u64) stream_rate_khz * nvid;
-		mvid_calc = div_u64(mvid_calc, rate);
+	mvid = (pixel_m & 0xFFFF) * 5;
+	nvid = (0xFFFF & (~pixel_n)) + (pixel_m & 0xFFFF);
 
-		/*
-		 * truncate back to 32 bits as this final divided value will
-		 * always be within the range of a 32 bit unsigned int.
-		 */
-		mvid = (u32) mvid_calc;
-	} else {
-		io_data = catalog->io.dp_mmss_cc;
+	if (nvid < nvid_fixed) {
+		u32 temp;
 
-		pixel_m = dp_read(catalog, io_data, MMSS_DP_PIXEL_M);
-		pixel_n = dp_read(catalog, io_data, MMSS_DP_PIXEL_N);
-		pr_debug("pixel_m=0x%x, pixel_n=0x%x\n", pixel_m, pixel_n);
-
-		mvid = (pixel_m & 0xFFFF) * 5;
-		nvid = (0xFFFF & (~pixel_n)) + (pixel_m & 0xFFFF);
-
-		pr_debug("rate = %d\n", rate);
-
-		if (link_rate_hbr2 == rate)
-			nvid *= 2;
-
-		if (link_rate_hbr3 == rate)
-			nvid *= 3;
+		temp = (nvid_fixed / nvid) * nvid;
+		mvid = (nvid_fixed / nvid) * mvid;
+		nvid = temp;
 	}
+
+	pr_debug("rate = %d\n", rate);
+
+	if (link_rate_hbr2 == rate)
+		nvid *= 2;
+
+	if (link_rate_hbr3 == rate)
+		nvid *= 3;
 
 	io_data = catalog->io.dp_link;
 	pr_debug("mvid=0x%x, nvid=0x%x\n", mvid, nvid);

@@ -425,6 +425,9 @@ static void fb_do_show_logo(struct fb_info *info, struct fb_image *image,
 {
 	unsigned int x;
 
+	if (image->width > info->var.xres || image->height > info->var.yres)
+		return;
+
 	if (rotate == FB_ROTATE_UR) {
 		for (x = 0;
 		     x < num && image->dx + image->width <= info->var.xres;
@@ -433,7 +436,9 @@ static void fb_do_show_logo(struct fb_info *info, struct fb_image *image,
 			image->dx += image->width + 8;
 		}
 	} else if (rotate == FB_ROTATE_UD) {
-		for (x = 0; x < num; x++) {
+		u32 dx = image->dx;
+
+		for (x = 0; x < num && image->dx <= dx; x++) {
 			info->fbops->fb_imageblit(info, image);
 			image->dx -= image->width + 8;
 		}
@@ -445,7 +450,9 @@ static void fb_do_show_logo(struct fb_info *info, struct fb_image *image,
 			image->dy += image->height + 8;
 		}
 	} else if (rotate == FB_ROTATE_CCW) {
-		for (x = 0; x < num; x++) {
+		u32 dy = image->dy;
+
+		for (x = 0; x < num && image->dy <= dy; x++) {
 			info->fbops->fb_imageblit(info, image);
 			image->dy -= image->height + 8;
 		}
@@ -1061,8 +1068,21 @@ fb_blank(struct fb_info *info, int blank)
  	if (blank > FB_BLANK_POWERDOWN)
  		blank = FB_BLANK_POWERDOWN;
 
+	if (info->blank == blank) {
+		if (info->fbops->fb_blank)
+			ret = info->fbops->fb_blank(blank, info);
+		return ret;
+	}
+
 	event.info = info;
 	event.data = &blank;
+
+	#ifdef CONFIG_PROJECT_SAKURA
+	/*fast tp suspend in LPWG*/
+	if (blank == FB_BLANK_POWERDOWN){
+		fb_notifier_call_chain(FB_EVENT_BLANK, &event);
+	}
+	#endif
 
 	early_ret = fb_notifier_call_chain(FB_EARLY_EVENT_BLANK, &event);
 
@@ -1080,12 +1100,15 @@ fb_blank(struct fb_info *info, int blank)
 			fb_notifier_call_chain(FB_R_EARLY_EVENT_BLANK, &event);
 	}
 
+    	if (!ret)
+		info->blank = blank;
+
  	return ret;
 }
 EXPORT_SYMBOL(fb_blank);
 
 static long do_fb_ioctl(struct fb_info *info, unsigned int cmd,
-			unsigned long arg)
+			unsigned long arg, struct file *file)
 {
 	struct fb_ops *fb;
 	struct fb_var_screeninfo var;
@@ -1219,14 +1242,13 @@ static long do_fb_ioctl(struct fb_info *info, unsigned int cmd,
 		console_unlock();
 		break;
 	default:
-		if (!lock_fb_info(info))
-			return -ENODEV;
 		fb = info->fbops;
-		if (fb->fb_ioctl)
+		if (fb->fb_ioctl_v2)
+			ret = fb->fb_ioctl_v2(info, cmd, arg, file);
+		else if (fb->fb_ioctl)
 			ret = fb->fb_ioctl(info, cmd, arg);
 		else
 			ret = -ENOTTY;
-		unlock_fb_info(info);
 	}
 	return ret;
 }
@@ -1237,7 +1259,7 @@ static long fb_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 	if (!info)
 		return -ENODEV;
-	return do_fb_ioctl(info, cmd, arg);
+	return do_fb_ioctl(info, cmd, arg, file);
 }
 
 #ifdef CONFIG_COMPAT
@@ -1268,7 +1290,7 @@ struct fb_cmap32 {
 };
 
 static int fb_getput_cmap(struct fb_info *info, unsigned int cmd,
-			  unsigned long arg)
+			  unsigned long arg, struct file *file)
 {
 	struct fb_cmap_user __user *cmap;
 	struct fb_cmap32 __user *cmap32;
@@ -1291,7 +1313,7 @@ static int fb_getput_cmap(struct fb_info *info, unsigned int cmd,
 	    put_user(compat_ptr(data), &cmap->transp))
 		return -EFAULT;
 
-	err = do_fb_ioctl(info, cmd, (unsigned long) cmap);
+	err = do_fb_ioctl(info, cmd, (unsigned long) cmap, file);
 
 	if (!err) {
 		if (copy_in_user(&cmap32->start,
@@ -1336,7 +1358,7 @@ static int do_fscreeninfo_to_user(struct fb_fix_screeninfo *fix,
 }
 
 static int fb_get_fscreeninfo(struct fb_info *info, unsigned int cmd,
-			      unsigned long arg)
+			      unsigned long arg, struct file *file)
 {
 	mm_segment_t old_fs;
 	struct fb_fix_screeninfo fix;
@@ -1347,7 +1369,7 @@ static int fb_get_fscreeninfo(struct fb_info *info, unsigned int cmd,
 
 	old_fs = get_fs();
 	set_fs(KERNEL_DS);
-	err = do_fb_ioctl(info, cmd, (unsigned long) &fix);
+	err = do_fb_ioctl(info, cmd, (unsigned long) &fix, file);
 	set_fs(old_fs);
 
 	if (!err)
@@ -1374,20 +1396,22 @@ static long fb_compat_ioctl(struct file *file, unsigned int cmd,
 	case FBIOPUT_CON2FBMAP:
 		arg = (unsigned long) compat_ptr(arg);
 	case FBIOBLANK:
-		ret = do_fb_ioctl(info, cmd, arg);
+		ret = do_fb_ioctl(info, cmd, arg, file);
 		break;
 
 	case FBIOGET_FSCREENINFO:
-		ret = fb_get_fscreeninfo(info, cmd, arg);
+		ret = fb_get_fscreeninfo(info, cmd, arg, file);
 		break;
 
 	case FBIOGETCMAP:
 	case FBIOPUTCMAP:
-		ret = fb_getput_cmap(info, cmd, arg);
+		ret = fb_getput_cmap(info, cmd, arg, file);
 		break;
 
 	default:
-		if (fb->fb_compat_ioctl)
+		if (fb->fb_compat_ioctl_v2)
+			ret = fb->fb_compat_ioctl_v2(info, cmd, arg, file);
+		else if (fb->fb_compat_ioctl)
 			ret = fb->fb_compat_ioctl(info, cmd, arg);
 		break;
 	}
@@ -1643,6 +1667,7 @@ static int do_register_framebuffer(struct fb_info *fb_info)
 		if (!registered_fb[i])
 			break;
 	fb_info->node = i;
+	fb_info->blank = -1;
 	atomic_set(&fb_info->count, 1);
 	mutex_init(&fb_info->lock);
 	mutex_init(&fb_info->mm_lock);

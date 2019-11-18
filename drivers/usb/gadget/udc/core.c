@@ -857,6 +857,8 @@ int usb_gadget_map_request_by_dev(struct device *dev,
 			dev_err(dev, "failed to map buffer\n");
 			return -EFAULT;
 		}
+
+		req->dma_mapped = 1;
 	}
 
 	return 0;
@@ -881,9 +883,10 @@ void usb_gadget_unmap_request_by_dev(struct device *dev,
 				is_in ? DMA_TO_DEVICE : DMA_FROM_DEVICE);
 
 		req->num_mapped_sgs = 0;
-	} else if (req->dma != DMA_ERROR_CODE) {
+	} else if (req->dma_mapped) {
 		dma_unmap_single(dev, req->dma, req->length,
 				is_in ? DMA_TO_DEVICE : DMA_FROM_DEVICE);
+		req->dma_mapped = 0;
 	}
 }
 EXPORT_SYMBOL_GPL(usb_gadget_unmap_request_by_dev);
@@ -1172,6 +1175,10 @@ int usb_add_gadget_udc_release(struct device *parent, struct usb_gadget *gadget,
 	dev_set_name(&gadget->dev, "gadget");
 	INIT_WORK(&gadget->work, usb_gadget_state_work);
 	gadget->dev.parent = parent;
+
+	dma_set_coherent_mask(&gadget->dev, parent->coherent_dma_mask);
+	gadget->dev.dma_parms = parent->dma_parms;
+	gadget->dev.dma_mask = parent->dma_mask;
 
 	if (release)
 		gadget->dev.release = release;

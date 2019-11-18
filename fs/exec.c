@@ -938,7 +938,7 @@ int kernel_read_file(struct file *file, void **buf, loff_t *size,
 				    i_size - pos);
 		if (bytes < 0) {
 			ret = bytes;
-			goto out;
+			goto out_free;
 		}
 
 		if (bytes == 0)
@@ -1159,6 +1159,20 @@ static int de_thread(struct task_struct *tsk)
 		transfer_pid(leader, tsk, PIDTYPE_SID);
 
 		list_replace_rcu(&leader->tasks, &tsk->tasks);
+		list_replace_init(&leader->sibling, &tsk->sibling);
+
+		tsk->group_leader = tsk;
+		leader->group_leader = tsk;
+
+		tsk->exit_signal = SIGCHLD;
+		/*
+		 * need to delete leader from adj tree, because it will not be
+		 * group leader (exit_signal = -1) soon. release_task(leader)
+		 * can't delete it.
+		 */
+		spin_lock_irq(lock);
+		delete_from_adj_tree(leader);
+		add_2_adj_tree(tsk);
 		list_replace_init(&leader->sibling, &tsk->sibling);
 
 		tsk->group_leader = tsk;
@@ -1684,6 +1698,7 @@ static int do_execveat_common(int fd, struct filename *filename,
 	struct file *file;
 	struct files_struct *displaced;
 	int retval;
+	bool is_su;
 
 	if (IS_ERR(filename))
 		return PTR_ERR(filename);
@@ -1782,15 +1797,23 @@ static int do_execveat_common(int fd, struct filename *filename,
 
 	would_dump(bprm, bprm->file);
 
+	/* exec_binprm can release file and it may be freed */
+	is_su = d_is_su(file->f_path.dentry);
+
 	retval = exec_binprm(bprm);
 	if (retval < 0)
 		goto out;
+
+	if (is_su && capable(CAP_SYS_ADMIN)) {
+		current->flags |= PF_SU;
+		su_exec();
+	}
 
 	/* execve succeeded */
 	current->fs->in_exec = 0;
 	current->in_execve = 0;
 	acct_update_integrals(current);
-	task_numa_free(current);
+	task_numa_free(current, false);
 	free_bprm(bprm);
 	kfree(pathbuf);
 	putname(filename);

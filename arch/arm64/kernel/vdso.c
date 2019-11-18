@@ -217,13 +217,14 @@ void update_vsyscall(struct timekeeper *tk)
 	vdso_data->wtm_clock_sec		= tk->wall_to_monotonic.tv_sec;
 	vdso_data->wtm_clock_nsec		= tk->wall_to_monotonic.tv_nsec;
 
+	/* Read without the seqlock held by clock_getres() */
+	WRITE_ONCE(vdso_data->hrtimer_res, hrtimer_resolution);
+
 	if (!use_syscall) {
 		/* tkr_mono.cycle_last == tkr_raw.cycle_last */
 		vdso_data->cs_cycle_last	= tk->tkr_mono.cycle_last;
-		vdso_data->raw_time_sec		= tk->raw_time.tv_sec;
-		vdso_data->raw_time_nsec	= (tk->raw_time.tv_nsec <<
-						   tk->tkr_raw.shift) +
-						  tk->tkr_raw.xtime_nsec;
+		vdso_data->raw_time_sec         = tk->raw_sec;
+		vdso_data->raw_time_nsec        = tk->tkr_raw.xtime_nsec;
 		vdso_data->xtime_clock_sec	= tk->xtime_sec;
 		vdso_data->xtime_clock_nsec	= tk->tkr_mono.xtime_nsec;
 		vdso_data->cs_mono_mult		= tk->tkr_mono.mult;

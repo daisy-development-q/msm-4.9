@@ -273,6 +273,11 @@
 #define KEY_F23			193
 #define KEY_F24			194
 
+#define KEY_GESTURE_NAV_UP		195
+#define KEY_GESTURE_NAV_DOWN	196
+#define KEY_GESTURE_NAV_LEFT	197
+#define KEY_GESTURE_NAV_RIGHT	198
+
 #define KEY_PLAYCD		200
 #define KEY_PAUSECD		201
 #define KEY_PROG3		202
@@ -683,6 +688,14 @@
 #define BTN_TRIGGER_HAPPY38		0x2e5
 #define BTN_TRIGGER_HAPPY39		0x2e6
 #define BTN_TRIGGER_HAPPY40		0x2e7
+
+/* Custom fingerprint gestures keys */
+#define KEY_FP_GESTURE_UP		0x2e8
+#define KEY_FP_GESTURE_DOWN		0x2e9
+#define KEY_FP_GESTURE_LEFT		0x2ea
+#define KEY_FP_GESTURE_RIGHT		0x2eb
+#define KEY_FP_GESTURE_LONG_PRESS	0x2ec
+#define KEY_FP_GESTURE_TAP		0x2ed
 
 /* We avoid low common keys in module aliases so they don't get huge. */
 #define KEY_MIN_INTERESTING	KEY_MUTE

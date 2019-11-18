@@ -1,4 +1,4 @@
-/* Copyright (c) 2014-2017, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2014-2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -23,7 +23,6 @@
 #include <linux/usb_bam.h>
 
 #include "u_data_ipa.h"
-#include "u_rmnet.h"
 
 struct ipa_data_ch_info {
 	struct usb_request			*rx_req;
@@ -45,7 +44,7 @@ struct ipa_data_ch_info {
 	u8					src_connection_idx;
 	u8					dst_connection_idx;
 	enum usb_ctrl				usb_bam_type;
-	struct gadget_ipa_port			*port_usb;
+	struct data_port			*port_usb;
 	struct usb_gadget			*gadget;
 	atomic_t				pipe_connect_notified;
 	struct usb_bam_connect_ipa_params	ipa_params;
@@ -299,7 +298,7 @@ static void ipa_data_disconnect_work(struct work_struct *w)
  * switch is being trigger. This API performs restoring USB endpoint operation
  * and disable USB endpoint used for accelerated path.
  */
-void ipa_data_disconnect(struct gadget_ipa_port *gp, enum ipa_func_type func)
+void ipa_data_disconnect(struct data_port *gp, enum ipa_func_type func)
 {
 	struct ipa_data_ch_info *port;
 	unsigned long flags;
@@ -402,7 +401,7 @@ static void ipa_data_connect_work(struct work_struct *w)
 {
 	struct ipa_data_ch_info *port = container_of(w, struct ipa_data_ch_info,
 								connect_w);
-	struct gadget_ipa_port	*gport;
+	struct data_port	*gport;
 	struct usb_gadget	*gadget = NULL;
 	struct teth_bridge_connect_params connect_params;
 	struct teth_bridge_init_params teth_bridge_params;
@@ -452,8 +451,9 @@ static void ipa_data_connect_work(struct work_struct *w)
 
 	/* update IPA Parameteres here. */
 	port->ipa_params.usb_connection_speed = gadget->speed;
-	port->ipa_params.reset_pipe_after_lpm =
-				msm_dwc3_reset_ep_after_lpm(gadget);
+	if (!gadget->is_chipidea)
+		port->ipa_params.reset_pipe_after_lpm =
+			msm_dwc3_reset_ep_after_lpm(gadget);
 	port->ipa_params.skip_ep_cfg = true;
 	port->ipa_params.keep_ipa_awake = true;
 	port->ipa_params.cons_clnt_hdl = -1;
@@ -470,19 +470,29 @@ static void ipa_data_connect_work(struct work_struct *w)
 				__func__);
 			goto out;
 		}
-
-		sps_params = MSM_SPS_MODE | MSM_DISABLE_WB
+		if (!gadget->is_chipidea) {
+			sps_params = MSM_SPS_MODE | MSM_DISABLE_WB
 				| MSM_PRODUCER | port->src_pipe_idx;
-		port->rx_req->length = 32*1024;
-		port->rx_req->udc_priv = sps_params;
-		configure_fifo(port->usb_bam_type,
-				port->src_connection_idx,
-				port->port_usb->out);
-		ret = msm_ep_config(gport->out);
-		if (ret) {
-			pr_err("msm_ep_config() failed for OUT EP\n");
-			spin_unlock_irqrestore(&port->port_lock, flags);
-			goto out;
+			port->rx_req->length = 32*1024;
+			port->rx_req->udc_priv = sps_params;
+			configure_fifo(port->usb_bam_type,
+					port->src_connection_idx,
+					port->port_usb->out);
+			ret = msm_ep_config(gport->out, port->rx_req);
+			if (ret) {
+				pr_err("msm_ep_config() failed for OUT EP\n");
+				spin_unlock_irqrestore(&port->port_lock, flags);
+				goto out;
+			}
+		} else {
+			/* gadget->is_chipidea */
+			get_bam2bam_connection_info(port->usb_bam_type,
+					port->src_connection_idx,
+					&port->src_pipe_idx,
+					NULL, NULL, NULL);
+			sps_params = (MSM_SPS_MODE | port->src_pipe_idx |
+				MSM_VENDOR_ID) & ~MSM_IS_FINITE_TRANSFER;
+			port->rx_req->udc_priv = sps_params;
 		}
 	}
 
@@ -497,17 +507,29 @@ static void ipa_data_connect_work(struct work_struct *w)
 				__func__);
 			goto unconfig_msm_ep_out;
 		}
-		sps_params = MSM_SPS_MODE | MSM_DISABLE_WB |
-						port->dst_pipe_idx;
-		port->tx_req->length = 32*1024;
-		port->tx_req->udc_priv = sps_params;
-		configure_fifo(port->usb_bam_type,
-				port->dst_connection_idx, gport->in);
-		ret = msm_ep_config(gport->in);
-		if (ret) {
-			pr_err("msm_ep_config() failed for IN EP\n");
-			spin_unlock_irqrestore(&port->port_lock, flags);
-			goto unconfig_msm_ep_out;
+		if (!gadget->is_chipidea) {
+			sps_params = MSM_SPS_MODE | MSM_DISABLE_WB |
+				port->dst_pipe_idx;
+			port->tx_req->length = 32*1024;
+			port->tx_req->udc_priv = sps_params;
+			configure_fifo(port->usb_bam_type,
+					port->dst_connection_idx, gport->in);
+
+			ret = msm_ep_config(gport->in, port->tx_req);
+			if (ret) {
+				pr_err("msm_ep_config() failed for IN EP\n");
+				spin_unlock_irqrestore(&port->port_lock, flags);
+				goto unconfig_msm_ep_out;
+			}
+		} else {
+			/* gadget->is_chipidea */
+			get_bam2bam_connection_info(port->usb_bam_type,
+					port->dst_connection_idx,
+					&port->dst_pipe_idx,
+					NULL, NULL, NULL);
+			sps_params = (MSM_SPS_MODE | port->dst_pipe_idx |
+				MSM_VENDOR_ID) & ~MSM_IS_FINITE_TRANSFER;
+			port->tx_req->udc_priv = sps_params;
 		}
 	}
 
@@ -730,7 +752,7 @@ out:
  * initiate USB BAM IPA connection. This API is enabling accelerated endpoints
  * and schedule connect_work() which establishes USB IPA BAM communication.
  */
-int ipa_data_connect(struct gadget_ipa_port *gp, enum ipa_func_type func,
+int ipa_data_connect(struct data_port *gp, enum ipa_func_type func,
 		u8 src_connection_idx, u8 dst_connection_idx)
 {
 	struct ipa_data_ch_info *port;
@@ -939,7 +961,7 @@ void ipa_data_flush_workqueue(void)
  * It is being used to initiate USB BAM IPA suspend functionality
  * for USB bus suspend functionality.
  */
-void ipa_data_suspend(struct gadget_ipa_port *gp, enum ipa_func_type func,
+void ipa_data_suspend(struct data_port *gp, enum ipa_func_type func,
 			bool remote_wakeup_enabled)
 {
 	struct ipa_data_ch_info *port;
@@ -1050,7 +1072,7 @@ static void bam2bam_data_suspend_work(struct work_struct *w)
  * It is being used to initiate USB resume functionality
  * for USB bus resume case.
  */
-void ipa_data_resume(struct gadget_ipa_port *gp, enum ipa_func_type func,
+void ipa_data_resume(struct data_port *gp, enum ipa_func_type func,
 			bool remote_wakeup_enabled)
 {
 	struct ipa_data_ch_info *port;
@@ -1164,8 +1186,8 @@ static void bam2bam_data_resume_work(struct work_struct *w)
 		spin_unlock_irqrestore(&port->port_lock, flags);
 		msm_dwc3_reset_dbm_ep(port->port_usb->in);
 		spin_lock_irqsave(&port->port_lock, flags);
-		usb_bam_resume(port->usb_bam_type, &port->ipa_params);
 	}
+	usb_bam_resume(port->usb_bam_type, &port->ipa_params);
 
 exit:
 	spin_unlock_irqrestore(&port->port_lock, flags);

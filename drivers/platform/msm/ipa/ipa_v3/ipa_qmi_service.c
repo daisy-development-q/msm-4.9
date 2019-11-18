@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -531,6 +531,20 @@ static int ipa3_qmi_init_modem_send_sync_msg(void)
 	req.v6_hash_filter_tbl_start_addr =
 		IPA_MEM_PART(v6_flt_hash_ofst) + smem_restr_bytes;
 
+	req.hw_stats_quota_base_addr_valid = true;
+	req.hw_stats_quota_base_addr =
+		IPA_MEM_PART(stats_quota_ofst) + smem_restr_bytes;
+
+	req.hw_stats_quota_size_valid = true;
+	req.hw_stats_quota_size = IPA_MEM_PART(stats_quota_size);
+
+	req.hw_drop_stats_base_addr_valid = true;
+	req.hw_drop_stats_base_addr =
+		IPA_MEM_PART(stats_drop_ofst) + smem_restr_bytes;
+
+	req.hw_drop_stats_table_size_valid = true;
+	req.hw_drop_stats_table_size = IPA_MEM_PART(stats_drop_size);
+
 	if (!ipa3_uc_loaded_check()) {  /* First time boot */
 		req.is_ssr_bootup_valid = false;
 		req.is_ssr_bootup = 0;
@@ -604,6 +618,14 @@ int ipa3_qmi_filter_request_send(struct ipa_install_fltr_rule_req_msg_v01 *req)
 	struct msg_desc req_desc, resp_desc;
 	int rc;
 	int i;
+
+	/* check if modem up */
+	if (!ipa3_qmi_indication_fin ||
+		!ipa3_qmi_modem_init_fin ||
+		!ipa_q6_clnt) {
+		IPAWANDBG("modem QMI haven't up yet\n");
+		return -EINVAL;
+	}
 
 	/* check if the filter rules from IPACM is valid */
 	if (req->filter_spec_list_len == 0) {
@@ -689,6 +711,14 @@ int ipa3_qmi_filter_request_ex_send(
 	int rc;
 	int i;
 
+	/* check if modem up */
+	if (!ipa3_qmi_indication_fin ||
+		!ipa3_qmi_modem_init_fin ||
+		!ipa_q6_clnt) {
+		IPAWANDBG("modem QMI haven't up yet\n");
+		return -EINVAL;
+	}
+
 	/* check if the filter rules from IPACM is valid */
 	if (req->filter_spec_ex_list_len == 0) {
 		IPAWANDBG("IPACM pass zero rules to Q6\n");
@@ -764,7 +794,7 @@ int ipa3_qmi_ul_filter_request_send(
 {
 	struct ipa_configure_ul_firewall_rules_resp_msg_v01 resp;
 	struct msg_desc req_desc, resp_desc;
-	int rc;
+	int rc, i;
 
 	IPAWANDBG("IPACM pass %u rules to Q6\n",
 		req->firewall_rules_list_len);
@@ -783,6 +813,37 @@ int ipa3_qmi_ul_filter_request_send(
 			MAX_NUM_QMI_RULE_CACHE;
 	}
 	mutex_unlock(&ipa3_qmi_lock);
+
+	/* check if modem is up */
+	if (!ipa3_qmi_indication_fin ||
+		!ipa3_qmi_modem_init_fin ||
+		!ipa_q6_clnt) {
+		IPAWANDBG("modem QMI service is not up yet\n");
+		return -EINVAL;
+	}
+
+	/* Passing 0 rules means that firewall is disabled */
+	if (req->firewall_rules_list_len == 0)
+		IPAWANDBG("IPACM passed 0 rules to Q6\n");
+
+	if (req->firewall_rules_list_len >= QMI_IPA_MAX_UL_FIREWALL_RULES_V01) {
+		IPAWANERR(
+		"Number of rules passed by IPACM, %d, exceed limit %d\n",
+			req->firewall_rules_list_len,
+			QMI_IPA_MAX_UL_FIREWALL_RULES_V01);
+		return -EINVAL;
+	}
+
+	/* Check for valid IP type */
+	for (i = 0; i < req->firewall_rules_list_len; i++) {
+		if (req->firewall_rules_list[i].ip_type !=
+				QMI_IPA_IP_TYPE_V4_V01 &&
+			req->firewall_rules_list[i].ip_type !=
+				QMI_IPA_IP_TYPE_V6_V01)
+			IPAWANERR("Invalid IP type %d\n",
+					req->firewall_rules_list[i].ip_type);
+		return -EINVAL;
+	}
 
 	req_desc.max_msg_len =
 		QMI_IPA_INSTALL_UL_FIREWALL_RULES_REQ_MAX_MSG_LEN_V01;

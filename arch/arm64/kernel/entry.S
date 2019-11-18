@@ -31,8 +31,8 @@
 #include <asm/irq.h>
 #include <asm/memory.h>
 #include <asm/mmu.h>
-#include <asm/ptrace.h>
 #include <asm/processor.h>
+#include <asm/ptrace.h>
 #include <asm/thread_info.h>
 #include <asm/uaccess.h>
 #include <asm/asm-uaccess.h>
@@ -180,7 +180,7 @@ alternative_if ARM64_HAS_PAN
 alternative_else_nop_endif
 
 	.if	\el != 0
-	mrs	x21, ttbr1_el1
+	mrs	x21, ttbr0_el1
 	tst	x21, #TTBR_ASID_MASK		// Check for the reserved ASID
 	orr	x23, x23, #PSR_PAN_BIT		// Set the emulated PAN in the saved SPSR
 	b.eq	1f				// TTBR0 access already disabled

@@ -379,7 +379,7 @@ config XILINX_HWICAP
 
 config R3964
 	tristate "Siemens R3964 line discipline"
-	depends on TTY
+	depends on TTY && BROKEN
 	---help---
 	  This driver allows synchronous communication with devices using the
 	  Siemens R3964 packet protocol. Unless you are dealing with special
@@ -607,7 +607,7 @@ source "drivers/char/xillybus/Kconfig"
 
 config MSM_ADSPRPC
         tristate "QTI ADSP RPC driver"
-        depends on MSM_GLINK
+        depends on MSM_GLINK || MSM_SMD
         help
           Provides a communication mechanism that allows for clients to
           make remote method invocations across processor boundary to

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2017, The Linux Foundation.All rights reserved.
+ * Copyright (c) 2015-2018, The Linux Foundation.All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -239,6 +239,18 @@ struct dsi_display {
 	struct work_struct lp_rx_timeout_work;
 };
 
+/**
+ * dsi_display_has_ext_bridge() - check whether display has ext bridge
+ *                                connected.
+ *
+ * Return: True - ext bridge, False - no ext bridge.
+ */
+static inline bool dsi_display_has_ext_bridge(const struct dsi_display *display)
+{
+	return display->type == DSI_DISPLAY_EXT_BRIDGE ||
+		display->type == DSI_DISPLAY_SPLIT_EXT_BRIDGE;
+}
+
 int dsi_display_dev_probe(struct platform_device *pdev);
 int dsi_display_dev_remove(struct platform_device *pdev);
 
@@ -302,6 +314,19 @@ int dsi_display_drm_bridge_init(struct dsi_display *display,
 int dsi_display_drm_bridge_deinit(struct dsi_display *display);
 
 /**
+ * dsi_display_drm_ext_bridge_init() - initializes DRM bridge for ext bridge
+ * @display:            Handle to the display.
+ * @enc:                Pointer to the encoder object which is connected to the
+ *			display.
+ * @connector:          Pointer to the connector object which is connected to
+ *                      the display.
+ *
+ * Return: error code.
+ */
+int dsi_display_drm_ext_bridge_init(struct dsi_display *display,
+		struct drm_encoder *enc, struct drm_connector *connector);
+
+/**
  * dsi_display_get_info() - returns the display properties
  * @info:             Pointer to the structure where info is stored.
  * @disp:             Handle to the display.
@@ -309,6 +334,15 @@ int dsi_display_drm_bridge_deinit(struct dsi_display *display);
  * Return: error code.
  */
 int dsi_display_get_info(struct msm_display_info *info, void *disp);
+
+/**
+ * dsi_display_ext_bridge_get_info() - returns the ext bridge's display info
+ * @info:             Pointer to the structure where info is stored.
+ * @disp:             Handle to the display.
+ *
+ * Return: error code.
+ */
+int dsi_display_ext_bridge_get_info(struct msm_display_info *info, void *disp);
 
 /**
  * dsi_display_get_mode_count() - get number of modes supported by the display
@@ -364,13 +398,14 @@ int dsi_display_validate_mode(struct dsi_display *display,
 			      u32 flags);
 
 /**
- * dsi_display_validate_mode_vrr() - validates mode if variable refresh case
+ * dsi_display_validate_mode_change() - validates mode if variable refresh case
+ *				or dynamic clk change case
  * @display:             Handle to display.
  * @mode:                Mode to be validated..
  *
  * Return: 0 if  error code.
  */
-int dsi_display_validate_mode_vrr(struct dsi_display *display,
+int dsi_display_validate_mode_change(struct dsi_display *display,
 			struct dsi_display_mode *cur_dsi_mode,
 			struct dsi_display_mode *mode);
 
@@ -614,6 +649,13 @@ int dsi_display_pre_kickoff(struct dsi_display *display,
  */
 enum dsi_pixel_format dsi_display_get_dst_format(void *display);
 
+/**
+ * dsi_display_cont_splash_config() - initialize splash resources
+ * @display:         Handle to display
+ *
+ * Return: Zero on Success
+ */
+int dsi_display_cont_splash_config(void *display);
 /*
  * dsi_display_get_panel_vfp - get panel vsync
  * @display: Pointer to private display structure

@@ -51,6 +51,11 @@ enum dsi_backlight_type {
 	DSI_BACKLIGHT_MAX,
 };
 
+enum bl_update_flag {
+	BL_UPDATE_DELAY_UNTIL_FIRST_FRAME,
+	BL_UPDATE_NONE,
+};
+
 enum {
 	MODE_GPIO_NOT_VALID = 0,
 	MODE_SEL_DUAL_PORT,
@@ -65,10 +70,18 @@ enum dsi_dms_mode {
 };
 
 struct dsi_dfps_capabilities {
-	bool dfps_support;
 	enum dsi_dfps_type type;
 	u32 min_refresh_rate;
 	u32 max_refresh_rate;
+	u32 *dfps_list;
+	u32 dfps_list_len;
+	bool dfps_support;
+};
+
+struct dsi_dyn_clk_caps {
+	bool dyn_clk_support;
+	u32 *bit_clk_list;
+	u32 bit_clk_list_len;
 };
 
 struct dsi_pinctrl_info {
@@ -85,6 +98,7 @@ struct dsi_panel_phy_props {
 
 struct dsi_backlight_config {
 	enum dsi_backlight_type type;
+	enum bl_update_flag bl_update;
 
 	u32 bl_min_level;
 	u32 bl_max_level;
@@ -129,6 +143,7 @@ enum esd_check_status_mode {
 
 struct drm_panel_esd_config {
 	bool esd_enabled;
+	bool cmd_channel;
 
 	enum esd_check_status_mode status_mode;
 	struct dsi_panel_cmd_set status_cmd;
@@ -140,8 +155,15 @@ struct drm_panel_esd_config {
 	u32 groups;
 };
 
+enum dsi_panel_type {
+	DSI_PANEL = 0,
+	EXT_BRIDGE,
+	DSI_PANEL_TYPE_MAX,
+};
+
 struct dsi_panel {
 	const char *name;
+	enum dsi_panel_type type;
 	struct device_node *panel_of_node;
 	struct mipi_dsi_device mipi_device;
 
@@ -156,6 +178,7 @@ struct dsi_panel {
 	enum dsi_op_mode panel_mode;
 
 	struct dsi_dfps_capabilities dfps_caps;
+	struct dsi_dyn_clk_caps dyn_clk_caps;
 	struct dsi_panel_phy_props phy_props;
 
 	struct dsi_display_mode *cur_mode;
@@ -205,7 +228,8 @@ static inline void dsi_panel_release_panel_lock(struct dsi_panel *panel)
 
 struct dsi_panel *dsi_panel_get(struct device *parent,
 				struct device_node *of_node,
-				int topology_override);
+				int topology_override,
+				enum dsi_panel_type type);
 
 int dsi_panel_trigger_esd_attack(struct dsi_panel *panel);
 
@@ -272,7 +296,13 @@ int dsi_panel_post_switch(struct dsi_panel *panel);
 
 void dsi_dsc_pclk_param_calc(struct msm_display_dsc_info *dsc, int intf_width);
 
+struct dsi_panel *dsi_panel_ext_bridge_get(struct device *parent,
+				struct device_node *of_node,
+				int topology_override);
+
 int dsi_panel_parse_esd_reg_read_configs(struct dsi_panel *panel,
 				struct device_node *of_node);
+
+void dsi_panel_ext_bridge_put(struct dsi_panel *panel);
 
 #endif /* _DSI_PANEL_H_ */
