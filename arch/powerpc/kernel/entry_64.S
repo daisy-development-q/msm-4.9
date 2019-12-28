@@ -510,6 +510,10 @@ flush_count_cache:
 	/* Save LR into r9 */
 	mflr	r9
 
+<<<<<<< HEAD
+=======
+	// Flush the link stack
+>>>>>>> v4.9.207
 	.rept 64
 	bl	.+4
 	.endr
@@ -519,6 +523,14 @@ flush_count_cache:
 	.balign 32
 	/* Restore LR */
 1:	mtlr	r9
+<<<<<<< HEAD
+=======
+
+	// If we're just flushing the link stack, return here
+3:	nop
+	patch_site 3b patch__flush_link_stack_return
+
+>>>>>>> v4.9.207
 	li	r9,0x7fff
 	mtctr	r9
 

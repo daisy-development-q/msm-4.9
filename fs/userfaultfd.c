@@ -496,15 +496,23 @@ static int userfaultfd_release(struct inode *inode, struct file *file)
 					 new_flags, vma->anon_vma,
 					 vma->vm_file, vma->vm_pgoff,
 					 vma_policy(vma),
+<<<<<<< HEAD
 					 NULL_VM_UFFD_CTX,
 					 vma_get_anon_name(vma));
+=======
+					 NULL_VM_UFFD_CTX);
+>>>>>>> v4.9.207
 			if (prev)
 				vma = prev;
 			else
 				prev = vma;
 		}
+<<<<<<< HEAD
 		vm_write_begin(vma);
 		WRITE_ONCE(vma->vm_flags, new_flags);
+=======
+		vma->vm_flags = new_flags;
+>>>>>>> v4.9.207
 		vma->vm_userfaultfd_ctx = NULL_VM_UFFD_CTX;
 		vm_write_end(vma);
 	}

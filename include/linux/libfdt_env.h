@@ -1,7 +1,11 @@
 #ifndef _LIBFDT_ENV_H
 #define _LIBFDT_ENV_H
 
+<<<<<<< HEAD
 #include <linux/kernel.h>
+=======
+#include <linux/kernel.h>	/* For INT_MAX */
+>>>>>>> v4.9.207
 #include <linux/string.h>
 
 #include <asm/byteorder.h>

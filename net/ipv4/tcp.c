@@ -2346,10 +2346,13 @@ int tcp_disconnect(struct sock *sk, int flags)
 	tcp_saved_syn_free(tp);
 	tp->bytes_acked = 0;
 	tp->bytes_received = 0;
+<<<<<<< HEAD
 
 	/* Clean up fastopen related fields */
 	tcp_free_fastopen_req(tp);
 	inet->defer_connect = 0;
+=======
+>>>>>>> v4.9.207
 
 	WARN_ON(inet->inet_num && !icsk->icsk_bind_hash);
 

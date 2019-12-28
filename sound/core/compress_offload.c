@@ -782,12 +782,16 @@ static int snd_compr_drain(struct snd_compr_stream *stream)
 {
 	int retval;
 
+<<<<<<< HEAD
 	mutex_lock(&stream->device->lock);
+=======
+>>>>>>> v4.9.207
 	switch (stream->runtime->state) {
 	case SNDRV_PCM_STATE_OPEN:
 	case SNDRV_PCM_STATE_SETUP:
 	case SNDRV_PCM_STATE_PREPARED:
 	case SNDRV_PCM_STATE_PAUSED:
+<<<<<<< HEAD
 		retval = -EPERM;
 		goto ret;
 	case SNDRV_PCM_STATE_XRUN:
@@ -797,6 +801,14 @@ static int snd_compr_drain(struct snd_compr_stream *stream)
 		break;
 	}
 	mutex_unlock(&stream->device->lock);
+=======
+		return -EPERM;
+	case SNDRV_PCM_STATE_XRUN:
+		return -EPIPE;
+	default:
+		break;
+	}
+>>>>>>> v4.9.207
 
 	retval = stream->ops->trigger(stream, SND_COMPR_TRIGGER_DRAIN);
 	mutex_lock(&stream->device->lock);
@@ -841,21 +853,32 @@ static int snd_compr_partial_drain(struct snd_compr_stream *stream)
 {
 	int retval;
 
+<<<<<<< HEAD
 	mutex_lock(&stream->device->lock);
+=======
+>>>>>>> v4.9.207
 	switch (stream->runtime->state) {
 	case SNDRV_PCM_STATE_OPEN:
 	case SNDRV_PCM_STATE_SETUP:
 	case SNDRV_PCM_STATE_PREPARED:
 	case SNDRV_PCM_STATE_PAUSED:
+<<<<<<< HEAD
 		mutex_unlock(&stream->device->lock);
 		return -EPERM;
 	case SNDRV_PCM_STATE_XRUN:
 		mutex_unlock(&stream->device->lock);
+=======
+		return -EPERM;
+	case SNDRV_PCM_STATE_XRUN:
+>>>>>>> v4.9.207
 		return -EPIPE;
 	default:
 		break;
 	}
+<<<<<<< HEAD
 	mutex_unlock(&stream->device->lock);
+=======
+>>>>>>> v4.9.207
 
 	/* partial drain doesn't have any meaning for capture streams */
 	if (stream->direction == SND_COMPRESS_CAPTURE)

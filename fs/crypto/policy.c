@@ -82,6 +82,11 @@ int fscrypt_ioctl_set_policy(struct file *filp, const void __user *arg)
 			ret = -ENOTDIR;
 		else if (IS_DEADDIR(inode))
 			ret = -ENOENT;
+<<<<<<< HEAD
+=======
+		else if (!inode->i_sb->s_cop->empty_dir)
+			ret = -EOPNOTSUPP;
+>>>>>>> v4.9.207
 		else if (!inode->i_sb->s_cop->empty_dir(inode))
 			ret = -ENOTEMPTY;
 		else

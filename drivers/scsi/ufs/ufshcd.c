@@ -2924,7 +2924,40 @@ static inline void ufshcd_prepare_utp_nop_upiu(struct ufshcd_lrb *lrbp)
 }
 
 /**
+<<<<<<< HEAD
  * ufshcd_compose_upiu - form UFS Protocol Information Unit(UPIU)
+=======
+ * ufshcd_comp_devman_upiu - UFS Protocol Information Unit(UPIU)
+ *			     for Device Management Purposes
+ * @hba - per adapter instance
+ * @lrb - pointer to local reference block
+ */
+static int ufshcd_comp_devman_upiu(struct ufs_hba *hba, struct ufshcd_lrb *lrbp)
+{
+	u32 upiu_flags;
+	int ret = 0;
+
+	if ((hba->ufs_version == UFSHCI_VERSION_10) ||
+	    (hba->ufs_version == UFSHCI_VERSION_11))
+		lrbp->command_type = UTP_CMD_TYPE_DEV_MANAGE;
+	else
+		lrbp->command_type = UTP_CMD_TYPE_UFS_STORAGE;
+
+	ufshcd_prepare_req_desc_hdr(lrbp, &upiu_flags, DMA_NONE);
+	if (hba->dev_cmd.type == DEV_CMD_TYPE_QUERY)
+		ufshcd_prepare_utp_query_req_upiu(hba, lrbp, upiu_flags);
+	else if (hba->dev_cmd.type == DEV_CMD_TYPE_NOP)
+		ufshcd_prepare_utp_nop_upiu(lrbp);
+	else
+		ret = -EINVAL;
+
+	return ret;
+}
+
+/**
+ * ufshcd_comp_scsi_upiu - UFS Protocol Information Unit(UPIU)
+ *			   for SCSI Purposes
+>>>>>>> v4.9.207
  * @hba - per adapter instance
  * @lrb - pointer to local reference block
  */
@@ -2933,6 +2966,7 @@ static int ufshcd_compose_upiu(struct ufs_hba *hba, struct ufshcd_lrb *lrbp)
 	u32 upiu_flags;
 	int ret = 0;
 
+<<<<<<< HEAD
 	switch (lrbp->command_type) {
 	case UTP_CMD_TYPE_SCSI:
 		if (likely(lrbp->cmd)) {
@@ -2966,6 +3000,21 @@ static int ufshcd_compose_upiu(struct ufs_hba *hba, struct ufshcd_lrb *lrbp)
 				__func__, lrbp->command_type);
 		break;
 	} /* end of switch */
+=======
+	if ((hba->ufs_version == UFSHCI_VERSION_10) ||
+	    (hba->ufs_version == UFSHCI_VERSION_11))
+		lrbp->command_type = UTP_CMD_TYPE_SCSI;
+	else
+		lrbp->command_type = UTP_CMD_TYPE_UFS_STORAGE;
+
+	if (likely(lrbp->cmd)) {
+		ufshcd_prepare_req_desc_hdr(lrbp, &upiu_flags,
+						lrbp->cmd->sc_data_direction);
+		ufshcd_prepare_utp_scsi_cmd_upiu(lrbp, upiu_flags);
+	} else {
+		ret = -EINVAL;
+	}
+>>>>>>> v4.9.207
 
 	return ret;
 }
@@ -7490,19 +7539,19 @@ static u32 ufshcd_find_max_sup_active_icc_level(struct ufs_hba *hba,
 		goto out;
 	}
 
-	if (hba->vreg_info.vcc)
+	if (hba->vreg_info.vcc && hba->vreg_info.vcc->max_uA)
 		icc_level = ufshcd_get_max_icc_level(
 				hba->vreg_info.vcc->max_uA,
 				POWER_DESC_MAX_ACTV_ICC_LVLS - 1,
 				&desc_buf[PWR_DESC_ACTIVE_LVLS_VCC_0]);
 
-	if (hba->vreg_info.vccq)
+	if (hba->vreg_info.vccq && hba->vreg_info.vccq->max_uA)
 		icc_level = ufshcd_get_max_icc_level(
 				hba->vreg_info.vccq->max_uA,
 				icc_level,
 				&desc_buf[PWR_DESC_ACTIVE_LVLS_VCCQ_0]);
 
-	if (hba->vreg_info.vccq2)
+	if (hba->vreg_info.vccq2 && hba->vreg_info.vccq2->max_uA)
 		icc_level = ufshcd_get_max_icc_level(
 				hba->vreg_info.vccq2->max_uA,
 				icc_level,
@@ -8627,6 +8676,15 @@ static int ufshcd_config_vreg_load(struct device *dev, struct ufs_vreg *vreg,
 	if (!vreg)
 		return 0;
 
+	/*
+	 * "set_load" operation shall be required on those regulators
+	 * which specifically configured current limitation. Otherwise
+	 * zero max_uA may cause unexpected behavior when regulator is
+	 * enabled or set as high power mode.
+	 */
+	if (!vreg->max_uA)
+		return 0;
+
 	ret = regulator_set_load(vreg->reg, ua);
 	if (ret < 0) {
 		dev_err(dev, "%s: %s set load (ua=%d) failed, err=%d\n",
@@ -8673,6 +8731,7 @@ static int ufshcd_config_vreg(struct device *dev,
 	name = vreg->name;
 
 	if (regulator_count_voltages(reg) > 0) {
+<<<<<<< HEAD
 		uA_load = on ? vreg->max_uA : 0;
 		ret = ufshcd_config_vreg_load(dev, vreg, uA_load);
 		if (ret)
@@ -8682,8 +8741,17 @@ static int ufshcd_config_vreg(struct device *dev,
 		ret = regulator_set_voltage(reg, min_uV, vreg->max_uV);
 		if (ret) {
 			dev_err(dev, "%s: %s set voltage failed, err=%d\n",
+=======
+		if (vreg->min_uV && vreg->max_uV) {
+			min_uV = on ? vreg->min_uV : 0;
+			ret = regulator_set_voltage(reg, min_uV, vreg->max_uV);
+			if (ret) {
+				dev_err(dev,
+					"%s: %s set voltage failed, err=%d\n",
+>>>>>>> v4.9.207
 					__func__, name, ret);
-			goto out;
+				goto out;
+			}
 		}
 	}
 out:
@@ -9946,6 +10014,9 @@ static void ufshcd_shutdown_clkscaling(struct ufs_hba *hba)
 int ufshcd_shutdown(struct ufs_hba *hba)
 {
 	int ret = 0;
+
+	if (!hba->is_powered)
+		goto out;
 
 	if (ufshcd_is_ufs_dev_poweroff(hba) && ufshcd_is_link_off(hba))
 		goto out;

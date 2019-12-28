@@ -801,6 +801,7 @@ static int uas_slave_alloc(struct scsi_device *sdev)
 	sdev->hostdata = devinfo;
 
 	/*
+<<<<<<< HEAD
 	 * We have two requirements here. We must satisfy the requirements
 	 * of the physical HC and the demands of the protocol, as we
 	 * definitely want no additional memory allocation in this path
@@ -820,6 +821,8 @@ static int uas_slave_alloc(struct scsi_device *sdev)
 	blk_queue_virt_boundary(sdev->request_queue, maxp - 1);
 
 	/*
+=======
+>>>>>>> v4.9.207
 	 * The protocol has no requirements on alignment in the strict sense.
 	 * Controllers may or may not have alignment restrictions.
 	 * As this is not exported, we use an extremely conservative guess.
@@ -852,6 +855,10 @@ static int uas_slave_configure(struct scsi_device *sdev)
 		sdev->wce_default_on = 1;
 	}
 
+	/* Some disks cannot handle READ_CAPACITY_16 */
+	if (devinfo->flags & US_FL_NO_READ_CAPACITY_16)
+		sdev->no_read_capacity_16 = 1;
+
 	/*
 	 * Some disks return the total number of blocks in response
 	 * to READ CAPACITY rather than the highest block number.
@@ -859,6 +866,12 @@ static int uas_slave_configure(struct scsi_device *sdev)
 	 */
 	if (devinfo->flags & US_FL_FIX_CAPACITY)
 		sdev->fix_capacity = 1;
+
+	/*
+	 * in some cases we have to guess
+	 */
+	if (devinfo->flags & US_FL_CAPACITY_HEURISTICS)
+		sdev->guess_capacity = 1;
 
 	/*
 	 * Some devices don't like MODE SENSE with page=0x3f,

@@ -880,4 +880,14 @@ enum mds_mitigations {
 	MDS_MITIGATION_VMWERV,
 };
 
+<<<<<<< HEAD
+=======
+enum taa_mitigations {
+	TAA_MITIGATION_OFF,
+	TAA_MITIGATION_UCODE_NEEDED,
+	TAA_MITIGATION_VERW,
+	TAA_MITIGATION_TSX_DISABLED,
+};
+
+>>>>>>> v4.9.207
 #endif /* _ASM_X86_PROCESSOR_H */

@@ -802,6 +802,7 @@ static int __check_input_term(struct mixer_build *state, int id,
 			return 0;
 		}
 		case UAC_SELECTOR_UNIT:
+<<<<<<< HEAD
 		/* UAC3_MIXER_UNIT_V3 */
 		case UAC2_CLOCK_SELECTOR:
 		/* UAC3_CLOCK_SOURCE */ {
@@ -837,6 +838,17 @@ static int __check_input_term(struct mixer_build *state, int id,
 				term->id = id;
 				term->name = uac_selector_unit_iSelector(d);
 			}
+=======
+		case UAC2_CLOCK_SELECTOR: {
+			struct uac_selector_unit_descriptor *d = p1;
+			/* call recursively to retrieve the channel info */
+			err = __check_input_term(state, d->baSourceID[0], term);
+			if (err < 0)
+				return err;
+			term->type = d->bDescriptorSubtype << 16; /* virtual type */
+			term->id = id;
+			term->name = uac_selector_unit_iSelector(d);
+>>>>>>> v4.9.207
 			return 0;
 		}
 		case UAC1_PROCESSING_UNIT:
@@ -1127,7 +1139,8 @@ static int get_min_max_with_quirks(struct usb_mixer_elem_info *cval,
 		if (cval->min + cval->res < cval->max) {
 			int last_valid_res = cval->res;
 			int saved, test, check;
-			get_cur_mix_raw(cval, minchn, &saved);
+			if (get_cur_mix_raw(cval, minchn, &saved) < 0)
+				goto no_res_check;
 			for (;;) {
 				test = saved;
 				if (test < cval->max)
@@ -1147,6 +1160,7 @@ static int get_min_max_with_quirks(struct usb_mixer_elem_info *cval,
 			snd_usb_set_cur_mix_value(cval, minchn, 0, saved);
 		}
 
+no_res_check:
 		cval->initialized = 1;
 	}
 
@@ -1964,6 +1978,7 @@ static int parse_audio_mixer_unit(struct mixer_build *state, int unitid,
 	int input_pins, num_ins, num_outs;
 	int pin, ich, err;
 
+<<<<<<< HEAD
 	if (state->mixer->protocol == UAC_VERSION_3) {
 		input_pins = badd_baiof_mu_desc.bNrInPins;
 		num_outs =
@@ -1980,6 +1995,15 @@ static int parse_audio_mixer_unit(struct mixer_build *state, int unitid,
 				      unitid);
 			return -EINVAL;
 		}
+=======
+	if (desc->bLength < 11 || !(input_pins = desc->bNrInPins) ||
+	    desc->bLength < sizeof(*desc) + desc->bNrInPins ||
+	    !(num_outs = uac_mixer_unit_bNrChannels(desc))) {
+		usb_audio_err(state->chip,
+			      "invalid MIXER UNIT descriptor %d\n",
+			      unitid);
+		return -EINVAL;
+>>>>>>> v4.9.207
 	}
 
 	num_ins = 0;

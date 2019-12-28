@@ -341,6 +341,7 @@ static __always_inline void __speculation_ctrl_update(unsigned long tifp,
 			updmsr  = true;
 		}
 	}
+<<<<<<< HEAD
 
 	/*
 	 * Only evaluate TIF_SPEC_IB if conditional STIBP is enabled,
@@ -352,6 +353,19 @@ static __always_inline void __speculation_ctrl_update(unsigned long tifp,
 		msr |= stibp_tif_to_spec_ctrl(tifn);
 	}
 
+=======
+
+	/*
+	 * Only evaluate TIF_SPEC_IB if conditional STIBP is enabled,
+	 * otherwise avoid the MSR write.
+	 */
+	if (IS_ENABLED(CONFIG_SMP) &&
+	    static_branch_unlikely(&switch_to_cond_stibp)) {
+		updmsr |= !!(tif_diff & _TIF_SPEC_IB);
+		msr |= stibp_tif_to_spec_ctrl(tifn);
+	}
+
+>>>>>>> v4.9.207
 	if (updmsr)
 		wrmsrl(MSR_IA32_SPEC_CTRL, msr);
 }

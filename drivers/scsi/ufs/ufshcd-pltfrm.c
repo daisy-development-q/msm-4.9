@@ -454,6 +454,7 @@ int ufshcd_pltfrm_init(struct platform_device *pdev,
 		goto dealloc_host;
 	}
 
+<<<<<<< HEAD
 	err = ufshcd_parse_reset_info(hba);
 	if (err) {
 		dev_err(&pdev->dev, "%s: reset parse failed %d\n",
@@ -482,6 +483,13 @@ int ufshcd_pltfrm_init(struct platform_device *pdev,
 	err = ufshcd_init(hba, mmio_base, irq);
 	if (err) {
 		dev_err(dev, "Intialization failed\n");
+=======
+	ufshcd_init_lanes_per_dir(hba);
+
+	err = ufshcd_init(hba, mmio_base, irq);
+	if (err) {
+		dev_err(dev, "Initialization failed\n");
+>>>>>>> v4.9.207
 		goto dealloc_host;
 	}
 

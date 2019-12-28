@@ -500,6 +500,7 @@ done:
 
 no_context:
 	__do_kernel_fault(addr, esr, regs);
+<<<<<<< HEAD
 	return 0;
 }
 
@@ -517,6 +518,8 @@ static int do_tlb_conf_fault(unsigned long addr,
 						&desc))
 		return 1;
 
+=======
+>>>>>>> v4.9.207
 	return 0;
 }
 

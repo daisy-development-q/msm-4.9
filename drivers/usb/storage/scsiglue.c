@@ -91,6 +91,7 @@ static int slave_alloc (struct scsi_device *sdev)
 	sdev->inquiry_len = 36;
 
 	/*
+<<<<<<< HEAD
 	 * USB has unusual scatter-gather requirements: the length of each
 	 * scatterlist element except the last must be divisible by the
 	 * Bulk maxpacket value.  Fortunately this value is always a
@@ -100,6 +101,8 @@ static int slave_alloc (struct scsi_device *sdev)
 	blk_queue_virt_boundary(sdev->request_queue, maxp - 1);
 
 	/*
+=======
+>>>>>>> v4.9.207
 	 * Some host controllers may have alignment requirements.
 	 * We'll play it safe by requiring 512-byte alignment always.
 	 */

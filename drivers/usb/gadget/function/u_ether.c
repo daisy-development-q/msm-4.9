@@ -263,7 +263,12 @@ rx_submit(struct eth_dev *dev, struct usb_request *req, gfp_t gfp_flags)
 	else
 		out = NULL;
 
+<<<<<<< HEAD
 	if (!out) {
+=======
+	if (!out)
+	{
+>>>>>>> v4.9.207
 		spin_unlock_irqrestore(&dev->lock, flags);
 		return -ENOTCONN;
 	}
