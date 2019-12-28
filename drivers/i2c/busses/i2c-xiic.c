@@ -725,11 +725,16 @@ static const struct i2c_algorithm xiic_algorithm = {
 	.functionality = xiic_func,
 };
 
-static struct i2c_adapter xiic_adapter = {
+static const struct i2c_adapter_quirks xiic_quirks = {
+	.max_read_len = 255,
+};
+
+static const struct i2c_adapter xiic_adapter = {
 	.owner = THIS_MODULE,
 	.name = DRIVER_NAME,
 	.class = I2C_CLASS_DEPRECATED,
 	.algo = &xiic_algorithm,
+	.quirks = &xiic_quirks,
 };
 
 
@@ -857,8 +862,7 @@ MODULE_DEVICE_TABLE(of, xiic_of_match);
 
 static int __maybe_unused cdns_i2c_runtime_suspend(struct device *dev)
 {
-	struct platform_device *pdev = to_platform_device(dev);
-	struct xiic_i2c *i2c = platform_get_drvdata(pdev);
+	struct xiic_i2c *i2c = dev_get_drvdata(dev);
 
 	clk_disable(i2c->clk);
 
@@ -867,8 +871,7 @@ static int __maybe_unused cdns_i2c_runtime_suspend(struct device *dev)
 
 static int __maybe_unused cdns_i2c_runtime_resume(struct device *dev)
 {
-	struct platform_device *pdev = to_platform_device(dev);
-	struct xiic_i2c *i2c = platform_get_drvdata(pdev);
+	struct xiic_i2c *i2c = dev_get_drvdata(dev);
 	int ret;
 
 	ret = clk_enable(i2c->clk);

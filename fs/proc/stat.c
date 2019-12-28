@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/cpumask.h>
 #include <linux/fs.h>
 #include <linux/init.h>
@@ -5,11 +6,12 @@
 #include <linux/kernel_stat.h>
 #include <linux/proc_fs.h>
 #include <linux/sched.h>
+#include <linux/sched/stat.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <linux/time.h>
 #include <linux/irqnr.h>
-#include <linux/cputime.h>
+#include <linux/sched/cputime.h>
 #include <linux/tick.h>
 
 #ifndef arch_irq_stat_cpu

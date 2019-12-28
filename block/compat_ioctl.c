@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/blkdev.h>
 #include <linux/blkpg.h>
 #include <linux/blktrace_api.h>
@@ -79,19 +80,16 @@ static int compat_hdio_getgeo(struct gendisk *disk, struct block_device *bdev,
 static int compat_hdio_ioctl(struct block_device *bdev, fmode_t mode,
 		unsigned int cmd, unsigned long arg)
 {
-	mm_segment_t old_fs = get_fs();
-	unsigned long kval;
-	unsigned int __user *uvp;
+	unsigned long __user *p;
 	int error;
 
-	set_fs(KERNEL_DS);
+	p = compat_alloc_user_space(sizeof(unsigned long));
 	error = __blkdev_driver_ioctl(bdev, mode,
-				cmd, (unsigned long)(&kval));
-	set_fs(old_fs);
-
+				cmd, (unsigned long)p);
 	if (error == 0) {
-		uvp = compat_ptr(arg);
-		if (put_user(kval, uvp))
+		unsigned int __user *uvp = compat_ptr(arg);
+		unsigned long v;
+		if (get_user(v, p) || put_user(v, uvp))
 			error = -EFAULT;
 	}
 	return error;
@@ -345,7 +343,7 @@ long compat_blkdev_ioctl(struct file *file, unsigned cmd, unsigned long arg)
 	case BLKALIGNOFF:
 		return compat_put_int(arg, bdev_alignment_offset(bdev));
 	case BLKDISCARDZEROES:
-		return compat_put_uint(arg, bdev_discard_zeroes_data(bdev));
+		return compat_put_uint(arg, 0);
 	case BLKFLSBUF:
 	case BLKROSET:
 	case BLKDISCARD:

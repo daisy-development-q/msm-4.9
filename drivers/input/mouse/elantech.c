@@ -700,7 +700,9 @@ static int elantech_debounce_check_v2(struct psmouse *psmouse)
          * When we encounter packet that matches this exactly, it means the
          * hardware is in debounce status. Just ignore the whole packet.
          */
-        const u8 debounce_packet[] = { 0x84, 0xff, 0xff, 0x02, 0xff, 0xff };
+	static const u8 debounce_packet[] = {
+		0x84, 0xff, 0xff, 0x02, 0xff, 0xff
+	};
         unsigned char *packet = psmouse->packet;
 
         return !memcmp(packet, debounce_packet, sizeof(debounce_packet));
@@ -741,7 +743,9 @@ static int elantech_packet_check_v2(struct psmouse *psmouse)
 static int elantech_packet_check_v3(struct psmouse *psmouse)
 {
 	struct elantech_data *etd = psmouse->private;
-	const u8 debounce_packet[] = { 0xc4, 0xff, 0xff, 0x02, 0xff, 0xff };
+	static const u8 debounce_packet[] = {
+		0xc4, 0xff, 0xff, 0x02, 0xff, 0xff
+	};
 	unsigned char *packet = psmouse->packet;
 
 	/*
@@ -1397,7 +1401,7 @@ static struct attribute *elantech_attrs[] = {
 	NULL
 };
 
-static struct attribute_group elantech_attr_group = {
+static const struct attribute_group elantech_attr_group = {
 	.attrs = elantech_attrs,
 };
 
@@ -1435,7 +1439,7 @@ int elantech_detect(struct psmouse *psmouse, bool set_properties)
 	struct ps2dev *ps2dev = &psmouse->ps2dev;
 	unsigned char param[3];
 
-	ps2_command(&psmouse->ps2dev, NULL, PSMOUSE_CMD_RESET_DIS);
+	ps2_command(ps2dev, NULL, PSMOUSE_CMD_RESET_DIS);
 
 	if (ps2_command(ps2dev,  NULL, PSMOUSE_CMD_DISABLE) ||
 	    ps2_command(ps2dev,  NULL, PSMOUSE_CMD_SETSCALE11) ||

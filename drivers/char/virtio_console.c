@@ -152,8 +152,8 @@ struct ports_device {
 	spinlock_t c_ivq_lock;
 	spinlock_t c_ovq_lock;
 
-	/* The current config space is stored here */
-	struct virtio_console_config config;
+	/* max. number of ports this device can hold */
+	u32 max_nr_ports;
 
 	/* The virtio device we're associated with */
 	struct virtio_device *vdev;
@@ -451,9 +451,6 @@ static struct port_buffer *alloc_buf(struct virtio_device *vdev, size_t buf_size
 		 * device is created by remoteproc, the DMA memory is
 		 * associated with the grandparent device:
 		 * vdev => rproc => platform-dev.
-		 * The code here would have been less quirky if
-		 * DMA_MEMORY_INCLUDES_CHILDREN had been supported
-		 * in dma-coherent.c
 		 */
 		if (!vdev->dev.parent || !vdev->dev.parent->parent)
 			goto free_buf;
@@ -1130,7 +1127,7 @@ static const struct file_operations port_fops = {
  * We turn the characters into a scatter-gather list, add it to the
  * output queue and then kick the Host.  Then we sit here waiting for
  * it to finish: inefficient in theory, but in practice
- * implementations will do it immediately (lguest's Launcher does).
+ * implementations will do it immediately.
  */
 static int put_chars(u32 vtermno, const char *buf, int count)
 {
@@ -1308,7 +1305,7 @@ static struct attribute *port_sysfs_entries[] = {
 	NULL
 };
 
-static struct attribute_group port_attribute_group = {
+static const struct attribute_group port_attribute_group = {
 	.name = NULL,		/* put in device directory */
 	.attrs = port_sysfs_entries,
 };
@@ -1636,11 +1633,11 @@ static void handle_control_message(struct virtio_device *vdev,
 			break;
 		}
 		if (virtio32_to_cpu(vdev, cpkt->id) >=
-		    portdev->config.max_nr_ports) {
+		    portdev->max_nr_ports) {
 			dev_warn(&portdev->vdev->dev,
 				"Request for adding port with "
 				"out-of-bound id %u, max. supported id: %u\n",
-				cpkt->id, portdev->config.max_nr_ports - 1);
+				cpkt->id, portdev->max_nr_ports - 1);
 			break;
 		}
 		add_port(portdev, virtio32_to_cpu(vdev, cpkt->id));
@@ -1894,7 +1891,7 @@ static int init_vqs(struct ports_device *portdev)
 	u32 i, j, nr_ports, nr_queues;
 	int err;
 
-	nr_ports = portdev->config.max_nr_ports;
+	nr_ports = portdev->max_nr_ports;
 	nr_queues = use_multiport(portdev) ? (nr_ports + 1) * 2 : 2;
 
 	vqs = kmalloc(nr_queues * sizeof(struct virtqueue *), GFP_KERNEL);
@@ -1937,9 +1934,9 @@ static int init_vqs(struct ports_device *portdev)
 		}
 	}
 	/* Find the queues. */
-	err = portdev->vdev->config->find_vqs(portdev->vdev, nr_queues, vqs,
-					      io_callbacks,
-					      (const char **)io_names);
+	err = virtio_find_vqs(portdev->vdev, nr_queues, vqs,
+			      io_callbacks,
+			      (const char **)io_names, NULL);
 	if (err)
 		goto free;
 
@@ -2077,13 +2074,13 @@ static int virtcons_probe(struct virtio_device *vdev)
 	}
 
 	multiport = false;
-	portdev->config.max_nr_ports = 1;
+	portdev->max_nr_ports = 1;
 
 	/* Don't test MULTIPORT at all if we're rproc: not a valid feature! */
 	if (!is_rproc_serial(vdev) &&
 	    virtio_cread_feature(vdev, VIRTIO_CONSOLE_F_MULTIPORT,
 				 struct virtio_console_config, max_nr_ports,
-				 &portdev->config.max_nr_ports) == 0) {
+				 &portdev->max_nr_ports) == 0) {
 		multiport = true;
 	}
 
@@ -2288,7 +2285,7 @@ static int __init init(void)
 
 	pdrvdata.debugfs_dir = debugfs_create_dir("virtio-ports", NULL);
 	if (!pdrvdata.debugfs_dir)
-		pr_warning("Error creating debugfs dir for virtio-ports\n");
+		pr_warn("Error creating debugfs dir for virtio-ports\n");
 	INIT_LIST_HEAD(&pdrvdata.consoles);
 	INIT_LIST_HEAD(&pdrvdata.portdevs);
 
